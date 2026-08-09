@@ -6,10 +6,10 @@ from telegram import Bot
 from telegram.constants import ParseMode
 from playwright.async_api import async_playwright
 
-# Load local .env if present (used when running on local machine)
+# Load local environment variables if available
 load_dotenv()
 
-# Read credentials from Environment / GitHub Secrets
+# Read secret credentials injected safely by GitHub Secrets
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@secretollah")
 
@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Strait of Hormuz Map URL (VesselFinder centered on Hormuz Strait)
+# Live AIS map centered over the Strait of Hormuz
 MAP_URL = "https://www.vesselfinder.com/aismap?zoom=9&lat=26.4500&lon=56.3500"
 
 async def capture_hormuz_map(output_path="hormuz_snapshot.png"):
@@ -36,9 +36,9 @@ async def capture_hormuz_map(output_path="hormuz_snapshot.png"):
         )
         page = await context.new_page()
         
-        # Navigate to map and wait for load
+        # Open map and wait for AIS ship markers to populate
         await page.goto(MAP_URL, wait_until="networkidle", timeout=60000)
-        await asyncio.sleep(5)  # Wait for AIS markers to load
+        await asyncio.sleep(5) 
         
         await page.screenshot(path=output_path)
         await browser.close()
@@ -48,21 +48,21 @@ async def capture_hormuz_map(output_path="hormuz_snapshot.png"):
 
 def generate_caption():
     """
-    Builds OSINT update caption with required channel tag.
+    Generates structured OSINT vessel traffic caption.
     """
     return (
-        "🚨 <b>OSINT ALERT: Strait of Hormuz Live Transit Update</b> 🚨\n\n"
+        "🚨 <b>OSINT ALERT: Strait of Hormuz Transit Scan</b> 🚨\n\n"
         "📍 <b>Zone:</b> Strait of Hormuz (Choke Point)\n"
         "🌊 <b>Coordinates:</b> 26°27'N 56°21'E\n"
-        "🚢 <b>Traffic Status:</b> Active Cargo / Tanker Transits\n"
-        "📊 <b>Source:</b> Live AIS Network Tracking Scan\n\n"
-        "🔍 <i>Monitored via open-source satellite & AIS tracking.</i>\n\n"
+        "🚢 <b>Traffic Status:</b> Active Commercial / Tanker Transits\n"
+        "📊 <b>Source:</b> Open-Source Satellite & AIS Network\n\n"
+        "🔍 <i>Live situational monitoring report.</i>\n\n"
         "⚓ @secretollah 🚢"
     )
 
 async def run_bot():
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("FATAL: TELEGRAM_BOT_TOKEN is missing! Set it in GitHub Secrets or .env file.")
+        logger.error("FATAL ERROR: TELEGRAM_BOT_TOKEN is missing! Add it in GitHub Secrets.")
         return
 
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -72,7 +72,7 @@ async def run_bot():
         # Step 1: Capture screenshot
         await capture_hormuz_map(image_path)
         
-        # Step 2: Send photo & caption to Telegram Channel
+        # Step 2: Post photo & caption to Telegram channel
         with open(image_path, "rb") as photo:
             await bot.send_photo(
                 chat_id=TELEGRAM_CHANNEL_ID,
@@ -86,7 +86,7 @@ async def run_bot():
         logger.error(f"Error executing bot workflow: {e}")
         
     finally:
-        # Cleanup temporary image file
+        # Clean up temporary screenshot
         if os.path.exists(image_path):
             os.remove(image_path)
 

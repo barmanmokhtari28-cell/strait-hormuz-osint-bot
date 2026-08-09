@@ -2,9 +2,8 @@ name: Strait of Hormuz OSINT Bot
 
 on:
   schedule:
-    # Runs every 3 hours automatically
     - cron: '0 */3 * * *'
-  workflow_dispatch: # Allows manual run button in GitHub interface
+  workflow_dispatch:
 
 jobs:
   run-osint-bot:

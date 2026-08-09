@@ -2,9 +2,9 @@ name: Strait of Hormuz OSINT Bot
 
 on:
   schedule:
-    # Runs every 3 hours (Cron Syntax: Minute Hour Day Month DayOfWeek)
+    # Runs every 3 hours automatically
     - cron: '0 */3 * * *'
-  workflow_dispatch: # Allows you to manually trigger the bot anytime from GitHub
+  workflow_dispatch: # Allows manual run button in GitHub interface
 
 jobs:
   run-osint-bot:
@@ -25,7 +25,7 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Run OSINT Bot
+      - name: Run OSINT Bot Script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}

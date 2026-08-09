@@ -2,8 +2,9 @@ name: Strait of Hormuz OSINT Bot
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
-  workflow_dispatch:
+    # Runs every hour at minute 0
+    - cron: '0 * * * *'
+  workflow_dispatch: # Allows manual trigger
 
 jobs:
   run-osint-bot:
@@ -12,6 +13,9 @@ jobs:
     steps:
       - name: Check out Repository
         uses: actions/checkout@v4
+        with:
+          # Required to allow committing history.json back to repo
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,3 +33,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
         run: python bot.py
+
+      - name: Save and Commit History State
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add history.json || true
+          git commit -m "Auto-update vessel history baseline [skip ci]" || true
+          git push || true

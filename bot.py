@@ -103,7 +103,8 @@ async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
 
 def generate_caption(ship_data, alert_type=None, changes=None):
     """
-    Generates Telegram caption with Persian headings and required hashtags.
+    Generates Telegram caption with rich HTML formatting (Blockquotes & Monospace Code)
+    using 'OSINT' instead of 'اوسینت'.
     """
     total = ship_data.get("total", "N/A")
     inbound = ship_data.get("inbound", "N/A")
@@ -112,27 +113,27 @@ def generate_caption(ship_data, alert_type=None, changes=None):
 
     if alert_type == "SURGE":
         header = "⚡ <b>هشدار OSINT: افزایش ناگهانی ترافیک دریایی</b> ⚡"
-        status_note = "🚨 <b>هشدار:</b> افزایش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n"
+        status_note = "🚨 <b>هشدار:</b> تغییر ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n\n"
     elif alert_type == "DROP":
         header = "⚡ <b>هشدار OSINT: کاهش ناگهانی ترافیک دریایی</b> ⚡"
-        status_note = "🚨 <b>هشدار:</b> کاهش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n"
+        status_note = "🚨 <b>هشدار:</b> کاهش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n\n"
     else:
         header = "🚨 <b>گزارش OSINT: پایش روزانه ترافیک دریایی تنگه هرمز</b> 🚨"
         status_note = ""
 
-    inbound_change = f" ({changes['inbound']:+d})" if changes and changes.get('inbound') else ""
-    outbound_change = f" ({changes['outbound']:+d})" if changes and changes.get('outbound') else ""
+    inbound_change = f" (<code>{changes['inbound']:+d}</code>)" if changes and changes.get('inbound') else ""
+    outbound_change = f" (<code>{changes['outbound']:+d}</code>)" if changes and changes.get('outbound') else ""
 
     return (
         f"{header}\n\n"
-        "📍 <b>منطقه:</b> تنگه هرمز (نقطه خفه)\n"
-        "🌊 <b>مختصات:</b> 26°27'N 56°21'E\n"
-        f"{status_note}\n"
-        "📊 <b>آمار لحظه‌ای شناورها:</b>\n"
-        f"🚢 <b>کل شناورهای شناسایی‌شده:</b> {total}\n"
-        f"📥 <b>ورودی (ورود به خلیج فارس):</b> {inbound}{inbound_change}\n"
-        f"📤 <b>خروجی (خروج به دریای عمان):</b> {outbound}{outbound_change}\n"
-        f"⚓ <b>متوقف / لنگرانداخته:</b> {anchored}\n\n"
+        f"{status_note}"
+        "📍 <b>منطقه:</b> <code>تنگه هرمز (نقطه خفه)</code>\n"
+        "🌊 <b>مختصات:</b> <code>26°27'N 56°21'E</code>\n\n"
+        "<blockquote>📊 <b>آمار لحظه‌ای شناورها:</b>\n"
+        f"🚢 <b>کل شناورهای شناسایی‌شده:</b> <code>{total}</code>\n"
+        f"📥 <b>ورودی (ورود به خلیج فارس):</b> <code>{inbound}</code>{inbound_change}\n"
+        f"📤 <b>خروجی (خروج به دریای عمان):</b> <code>{outbound}</code>{outbound_change}\n"
+        f"⚓ <b>متوقف / لنگرانداخته:</b> <code>{anchored}</code></blockquote>\n\n"
         "🔍 <i>شناسایی برخط AIS استخراج‌شده از طریق اسکن راداری خودکار.</i>\n\n"
         "⚓ @secretollah 🚢\n"
         "#تنگه_هرمز"

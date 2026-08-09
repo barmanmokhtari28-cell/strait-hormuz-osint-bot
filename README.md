@@ -1,33 +1,11 @@
-# Strait of Hormuz OSINT Ship Tracking Bot 🚢⚓
+# Strait of Hormuz OSINT Vessel Radar 🚢⚓
 
-An automated OSINT Telegram Bot that captures real-time AIS marine traffic snapshots of the Strait of Hormuz and publishes formatted updates directly to your Telegram channel.
+Automated OSINT surveillance bot tracking live maritime traffic, cargo vessels, and oil tankers transiting the **Strait of Hormuz**.
 
 ## Features
-- 📸 Automatic high-resolution screenshotting of Strait of Hormuz live ship traffic using Playwright.
-- 📡 Formatted OSINT captioning with custom channel signatures.
-- ⏱️ Configurable automated timer loops for periodic monitoring.
+- 📸 Automatic high-resolution AIS map snapshotting using Playwright.
+- 🕒 Scheduled updates via GitHub Actions every 3 hours.
+- 📢 Live automated posting directly to Telegram.
 
-## Channel
-📢 Updates posted directly to [**@secretollah**](https://t.me/secretollah).
-
-## Setup & Deployment Instructions
-
-### 1. Requirements
-- Python 3.9+
-- A Telegram Bot token (from [@BotFather](https://t.me/BotFather))
-- Add your bot as an **Administrator** in your Telegram channel (`@secretollah`).
-
-### 2. Local Installation
-```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/strait-hormuz-osint-bot.git
-cd strait-hormuz-osint-bot
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install Playwright browser binaries
-playwright install chromium
-
-# Create .env file
-cp .env.example .env
+## Official Channel
+📡 Updates published directly to [**@secretollah**](https://t.me/secretollah).

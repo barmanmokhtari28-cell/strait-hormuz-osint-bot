@@ -13,10 +13,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@secretollah")
 
-# Sensitivity threshold for surge/drop alerts (e.g., 5 ships difference)
+# Surge / Drop difference threshold (e.g., 5 vessels)
 SURGE_DROP_THRESHOLD = 5 
 
-# Scheduled hours in UTC for daily reports (08:00 UTC & 20:00 UTC)
+# Scheduled UTC hours for daily reports (08:00 UTC and 20:00 UTC)
 SCHEDULED_HOURS_UTC = [8, 20]
 
 HISTORY_FILE = "history.json"
@@ -103,36 +103,38 @@ async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
 
 def generate_caption(ship_data, alert_type=None, changes=None):
     """
-    Generates Telegram caption for scheduled reports or anomaly alerts.
+    Generates Telegram caption with Persian headings and required hashtags.
     """
     total = ship_data.get("total", "N/A")
     inbound = ship_data.get("inbound", "N/A")
     outbound = ship_data.get("outbound", "N/A")
     anchored = ship_data.get("anchored", "N/A")
 
-    if alert_type:
-        inbound_change = f"({changes['inbound']:+d})" if changes else ""
-        outbound_change = f"({changes['outbound']:+d})" if changes else ""
-        
-        header = f"⚡ <b>OSINT ANOMALY ALERT: {alert_type} DETECTED</b> ⚡"
-        status_note = f"🚨 <b>Notice:</b> Sudden traffic shift detected in Strait of Hormuz!\n"
+    if alert_type == "SURGE":
+        header = "⚡ <b>هشدار اوسینت: افزایش ناگهانی ترافیک دریایی</b> ⚡"
+        status_note = "🚨 <b>هشدار:</b> افزایش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n"
+    elif alert_type == "DROP":
+        header = "⚡ <b>هشدار اوسینت: کاهش ناگهانی ترافیک دریایی</b> ⚡"
+        status_note = "🚨 <b>هشدار:</b> کاهش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n"
     else:
-        header = "🚨 <b>گزارش به روز کشتی های ورودی و خروجی به تنـگه هـرمـز</b> 🚨"
-        inbound_change, outbound_change = "", ""
+        header = "🚨 <b>گزارش اوسینت: پایش روزانه ترافیک دریایی تنگه هرمز</b> 🚨"
         status_note = ""
+
+    inbound_change = f" ({changes['inbound']:+d})" if changes and changes.get('inbound') else ""
+    outbound_change = f" ({changes['outbound']:+d})" if changes and changes.get('outbound') else ""
 
     return (
         f"{header}\n\n"
-        "📍 <b>Zone:</b> Strait of Hormuz (Choke Point)\n"
-        "🌊 <b>Coordinates:</b> 26°27'N 56°21'E\n"
+        "📍 <b>منطقه:</b> تنگه هرمز (نقطه خفه)\n"
+        "🌊 <b>مختصات:</b> 26°27'N 56°21'E\n"
         f"{status_note}\n"
-        "📊 <b>LIVE VESSEL COUNT:</b>\n"
-        f"🚢 <b>Total Detected Ships:</b> {total}\n"
-        f"📥 <b>Inbound (Entering Gulf):</b> {inbound} {inbound_change}\n"
-        f"📤 <b>Outbound (Exiting to Oman):</b> {outbound} {outbound_change}\n"
-        f"⚓ <b>Stationary / Anchored:</b> {anchored}\n\n"
+        "📊 <b>آمار لحظه‌ای شناورها:</b>\n"
+        f"🚢 <b>کل شناورهای شناسایی‌شده:</b> {total}\n"
+        f"📥 <b>ورودی (ورود به خلیج فارس):</b> {inbound}{inbound_change}\n"
+        f"📤 <b>خروجی (خروج به دریای عمان):</b> {outbound}{outbound_change}\n"
+        f"⚓ <b>متوقف / لنگرانداخته:</b> {anchored}\n\n"
         "🔍 <i>شناسایی برخط AIS استخراج‌شده از طریق اسکن راداری خودکار.</i>\n\n"
-        "⚓ @secretollah 🚢"
+        "⚓ @secretollah 🚢\n"
         "#تنگه_هرمز"
     )
 
@@ -148,7 +150,7 @@ async def run_bot():
     current_hour = now_utc.hour
 
     try:
-        # Step 1: Capture screenshot & vessel numbers
+        # Capture screenshot & vessel numbers
         image_path, ship_data = await capture_hormuz_map_and_count(image_path)
         
         curr_inbound = ship_data["inbound"]
@@ -158,29 +160,32 @@ async def run_bot():
         prev_outbound = history.get("outbound")
         last_scheduled_hour = history.get("last_scheduled_hour")
 
-        # Step 2: Determine if an Anomaly (Surge/Drop) occurred
+        # Check for first run ever
+        is_first_run = prev_inbound is None or prev_outbound is None
+
+        # Check for Anomaly (Surge/Drop)
         alert_type = None
         changes = None
 
-        if prev_inbound is not None and prev_outbound is not None:
+        if not is_first_run:
             diff_inbound = curr_inbound - prev_inbound
             diff_outbound = curr_outbound - prev_outbound
 
             if diff_inbound >= SURGE_DROP_THRESHOLD or diff_outbound >= SURGE_DROP_THRESHOLD:
-                alert_type = "TRAFFIC SURGE"
+                alert_type = "SURGE"
                 changes = {"inbound": diff_inbound, "outbound": diff_outbound}
             elif diff_inbound <= -SURGE_DROP_THRESHOLD or diff_outbound <= -SURGE_DROP_THRESHOLD:
-                alert_type = "TRAFFIC DROP"
+                alert_type = "DROP"
                 changes = {"inbound": diff_inbound, "outbound": diff_outbound}
 
-        # Step 3: Check if it's one of the 2 daily scheduled times (08:00 UTC or 20:00 UTC)
+        # Check scheduled post time (08:00 UTC or 20:00 UTC)
         is_scheduled_time = (current_hour in SCHEDULED_HOURS_UTC) and (last_scheduled_hour != current_hour)
 
-        # Send post if it is a scheduled time OR if an anomaly alert occurred
-        should_send_post = is_scheduled_time or (alert_type is not None)
+        # Send post if it is first run, scheduled time, OR anomaly detected
+        should_send_post = is_first_run or is_scheduled_time or (alert_type is not None)
 
         if should_send_post:
-            logger.info(f"Posting update. Scheduled={is_scheduled_time}, Alert={alert_type}")
+            logger.info(f"Posting to channel. FirstRun={is_first_run}, Scheduled={is_scheduled_time}, Alert={alert_type}")
             caption = generate_caption(ship_data, alert_type=alert_type, changes=changes)
             
             with open(image_path, "rb") as photo:
@@ -191,12 +196,12 @@ async def run_bot():
                     parse_mode=ParseMode.HTML
                 )
             
-            if is_scheduled_time:
+            if is_scheduled_time or is_first_run:
                 history["last_scheduled_hour"] = current_hour
         else:
-            logger.info("Normal traffic scan complete. No surge/drop detected, not a scheduled post time. Silent update saved.")
+            logger.info("Normal traffic scan complete. Silent update saved.")
 
-        # Step 4: Always save state for the next hourly check
+        # Save history state for next scan
         history["inbound"] = curr_inbound
         history["outbound"] = curr_outbound
         history["total"] = ship_data["total"]

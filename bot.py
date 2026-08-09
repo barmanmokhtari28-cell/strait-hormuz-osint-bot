@@ -111,13 +111,13 @@ def generate_caption(ship_data, alert_type=None, changes=None):
     anchored = ship_data.get("anchored", "N/A")
 
     if alert_type == "SURGE":
-        header = "⚡ <b>هشدار اوسینت: افزایش ناگهانی ترافیک دریایی</b> ⚡"
+        header = "⚡ <b>هشدار OSINT: افزایش ناگهانی ترافیک دریایی</b> ⚡"
         status_note = "🚨 <b>هشدار:</b> افزایش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n"
     elif alert_type == "DROP":
-        header = "⚡ <b>هشدار اوسینت: کاهش ناگهانی ترافیک دریایی</b> ⚡"
+        header = "⚡ <b>هشدار OSINT: کاهش ناگهانی ترافیک دریایی</b> ⚡"
         status_note = "🚨 <b>هشدار:</b> کاهش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n"
     else:
-        header = "🚨 <b>گزارش اوسینت: پایش روزانه ترافیک دریایی تنگه هرمز</b> 🚨"
+        header = "🚨 <b>گزارش OSINT: پایش روزانه ترافیک دریایی تنگه هرمز</b> 🚨"
         status_note = ""
 
     inbound_change = f" ({changes['inbound']:+d})" if changes and changes.get('inbound') else ""

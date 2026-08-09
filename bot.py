@@ -12,6 +12,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@secretollah")
+IS_MANUAL_RUN = os.getenv("MANUAL_RUN", "false").lower() == "true" or os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
 # Surge / Drop difference threshold (e.g., 5 vessels)
 SURGE_DROP_THRESHOLD = 5 
@@ -182,11 +183,11 @@ async def run_bot():
         # Check scheduled post time (08:00 UTC or 20:00 UTC)
         is_scheduled_time = (current_hour in SCHEDULED_HOURS_UTC) and (last_scheduled_hour != current_hour)
 
-        # Send post if it is first run, scheduled time, OR anomaly detected
-        should_send_post = is_first_run or is_scheduled_time or (alert_type is not None)
+        # Send post if it is a manual trigger, first run, scheduled time, OR anomaly detected
+        should_send_post = IS_MANUAL_RUN or is_first_run or is_scheduled_time or (alert_type is not None)
 
         if should_send_post:
-            logger.info(f"Posting to channel. FirstRun={is_first_run}, Scheduled={is_scheduled_time}, Alert={alert_type}")
+            logger.info(f"Posting to channel. Manual={IS_MANUAL_RUN}, FirstRun={is_first_run}, Scheduled={is_scheduled_time}, Alert={alert_type}")
             caption = generate_caption(ship_data, alert_type=alert_type, changes=changes)
             
             with open(image_path, "rb") as photo:

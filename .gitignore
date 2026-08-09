@@ -1,11 +1,6 @@
-# Ignore secret files
 .env
-*.pem
-*.key
-
-# Ignore Python & temporary files
-__pycache__/
-venv/
 *.png
 *.jpg
+__pycache__/
+venv/
 .playwright/

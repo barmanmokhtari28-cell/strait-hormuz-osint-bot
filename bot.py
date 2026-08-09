@@ -117,7 +117,7 @@ def generate_caption(ship_data, alert_type=None, changes=None):
         header = f"⚡ <b>OSINT ANOMALY ALERT: {alert_type} DETECTED</b> ⚡"
         status_note = f"🚨 <b>Notice:</b> Sudden traffic shift detected in Strait of Hormuz!\n"
     else:
-        header = "🚨 <b>OSINT REPORT: Daily Strait of Hormuz Traffic Scan</b> 🚨"
+        header = "🚨 <b>گزارش به روز کشتی های ورودی و خروجی به تنـگه هـرمـز</b> 🚨"
         inbound_change, outbound_change = "", ""
         status_note = ""
 
@@ -133,6 +133,7 @@ def generate_caption(ship_data, alert_type=None, changes=None):
         f"⚓ <b>Stationary / Anchored:</b> {anchored}\n\n"
         "🔍 <i>شناسایی برخط AIS استخراج‌شده از طریق اسکن راداری خودکار.</i>\n\n"
         "⚓ @secretollah 🚢"
+        "#تنگه_هرمز"
     )
 
 async def run_bot():

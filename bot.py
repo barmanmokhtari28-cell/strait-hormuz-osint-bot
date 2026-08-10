@@ -17,8 +17,8 @@ IS_MANUAL_RUN = os.getenv("MANUAL_RUN", "false").lower() == "true" or os.getenv(
 # Surge / Drop difference threshold (5 vessels)
 SURGE_DROP_THRESHOLD = 5 
 
-# Scheduled UTC hours for daily reports (08:00 UTC and 20:00 UTC)
-SCHEDULED_HOURS_UTC = [8, 20]
+# Scheduled UTC hours for quarterly reports (4 times a day: 02:00, 08:00, 14:00, 20:00 UTC)
+SCHEDULED_HOURS_UTC = [2, 8, 14, 20]
 
 HISTORY_FILE = "history.json"
 
@@ -139,12 +139,18 @@ async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
 
 def generate_caption(ship_data, alert_type=None, changes=None):
     """
-    Generates Telegram caption with rich HTML formatting (Blockquotes & Monospace Code).
+    Generates Telegram caption with rich HTML formatting (Blockquotes & Monospace Code)
+    including 4x daily report schedule and report timestamp.
     """
     total = ship_data.get("total", "N/A")
     inbound = ship_data.get("inbound", "N/A")
     outbound = ship_data.get("outbound", "N/A")
     anchored = ship_data.get("anchored", "N/A")
+
+    # Current UTC date & time
+    now_utc = datetime.now(timezone.utc)
+    date_str = now_utc.strftime("%Y-%m-%d")
+    time_str = now_utc.strftime("%H:%M UTC")
 
     if alert_type == "SURGE":
         header = "⚡ <b>هشدار OSINT: افزایش ناگهانی ترافیک دریایی</b> ⚡"
@@ -153,7 +159,7 @@ def generate_caption(ship_data, alert_type=None, changes=None):
         header = "⚡ <b>هشدار OSINT: کاهش ناگهانی ترافیک دریایی</b> ⚡"
         status_note = "🚨 <b>هشدار:</b> کاهش ناگهانی در ترافیک شناورهای تنگه هرمز شناسایی شد!\n\n"
     else:
-        header = "🚨 <b>گزارش OSINT: پایش روزانه ترافیک دریایی تنگه هرمز</b> 🚨"
+        header = "🚨 <b>گزارش OSINT: پایش دوری ترافیک دریایی تنگه هرمز</b> 🚨"
         status_note = ""
 
     inbound_change = f" (<code>{changes['inbound']:+d}</code>)" if changes and changes.get('inbound') else ""
@@ -162,6 +168,7 @@ def generate_caption(ship_data, alert_type=None, changes=None):
     return (
         f"{header}\n\n"
         f"{status_note}"
+        f"📅 <b>تاریخ و زمان:</b> <code>{date_str} | {time_str}</code>\n"
         "📍 <b>منطقه:</b> <code>تنگه هرمز (نقطه خفه)</code>\n"
         "🌊 <b>مختصات:</b> <code>26°27'N 56°21'E</code>\n\n"
         "<blockquote>📊 <b>آمار لحظه‌ای شناورها:</b>\n"
@@ -214,10 +221,10 @@ async def run_bot():
                 alert_type = "DROP"
                 changes = {"inbound": diff_inbound, "outbound": diff_outbound}
 
-        # Check scheduled post time (08:00 UTC or 20:00 UTC)
+        # Check scheduled quarterly post time (02:00, 08:00, 14:00, 20:00 UTC)
         is_scheduled_time = (current_hour in SCHEDULED_HOURS_UTC) and (last_scheduled_hour != current_hour)
 
-        # Send post if manual run, first run, scheduled time, OR anomaly detected
+        # Send post if manual run, first run, scheduled quarterly time, OR anomaly detected
         should_send_post = IS_MANUAL_RUN or is_first_run or is_scheduled_time or (alert_type is not None)
 
         if should_send_post:

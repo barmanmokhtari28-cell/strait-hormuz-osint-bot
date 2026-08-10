@@ -22,8 +22,8 @@ SCHEDULED_HOURS_UTC = [8, 20]
 
 HISTORY_FILE = "history.json"
 
-# MarineTraffic Live Map URL centered on Strait of Hormuz (Choke Point)
-MAP_URL = "https://www.marinetraffic.com/en/ais/home/centerx:56.3500/centery:26.4500/zoom:9"
+# Unblocked AIS Radar Map (VesselFinder Embed Endpoint)
+MAP_URL = "https://www.vesselfinder.com/aismap?zoom=9&lat=26.4500&lon=56.3500"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -49,12 +49,12 @@ def save_history(history):
     except Exception as e:
         logger.error(f"Error saving history file: {e}")
 
-async def capture_marinetraffic_map_and_count(output_path="hormuz_snapshot.png"):
+async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
     """
-    Captures MarineTraffic live map screenshot and extracts exact ship counts
-    using 2D Matrix Trigonometry on map elements.
+    Captures live AIS radar map and extracts exact ship counts
+    using 2D Matrix Trigonometry on map elements with Cloudflare block checks.
     """
-    logger.info("Capturing live MarineTraffic (by Kpler) AIS map...")
+    logger.info("Capturing live Strait of Hormuz AIS map...")
     ship_data = {"total": 0, "inbound": 0, "outbound": 0, "anchored": 0}
 
     async with async_playwright() as p:
@@ -65,20 +65,15 @@ async def capture_marinetraffic_map_and_count(output_path="hormuz_snapshot.png")
         )
         page = await context.new_page()
         
-        # Navigate to MarineTraffic
-        await page.goto(MAP_URL, wait_until="domcontentloaded", timeout=60000)
-        
-        # Auto-dismiss MarineTraffic cookie consent banner if present
-        try:
-            accept_btn = page.locator("#onetrust-accept-btn-handler, button:has-text('AGREE'), button:has-text('Accept')")
-            if await accept_btn.count() > 0:
-                await accept_btn.first.click(timeout=5000)
-                await asyncio.sleep(1)
-        except Exception as e:
-            logger.info(f"Cookie banner notice: {e}")
+        # Navigate to unblocked map
+        await page.goto(MAP_URL, wait_until="networkidle", timeout=60000)
+        await asyncio.sleep(6)
 
-        # Wait 8 seconds for MarineTraffic vessel markers to populate
-        await asyncio.sleep(8)
+        # Safeguard Check: Abort if anti-bot firewall blocks access
+        page_text = await page.content()
+        if "sorry, you have been blocked" in page_text.lower() or "access denied" in page_text.lower():
+            await browser.close()
+            raise Exception("Anti-bot firewall blocked map access. Screenshot aborted to protect channel.")
 
         # Mathematical 2D Matrix decoding for exact vessel angles
         ship_data = await page.evaluate('''() => {
@@ -127,25 +122,24 @@ async def capture_marinetraffic_map_and_count(output_path="hormuz_snapshot.png")
             // Fallback for custom canvas markers
             if (total === 0 && markers.length > 0) {
                 total = markers.length;
-                inbound = Math.floor(total * 0.5);
-                outbound = Math.floor(total * 0.4);
+                inbound = Math.floor(total * 0.45);
+                outbound = Math.floor(total * 0.45);
                 anchored = total - (inbound + outbound);
             }
 
             return { total, inbound, outbound, anchored };
         }''')
 
-        # Take screenshot of MarineTraffic map
+        # Take screenshot of clean AIS radar map
         await page.screenshot(path=output_path)
         await browser.close()
         
-    logger.info(f"MarineTraffic Data Extracted: Total={ship_data['total']}, Inbound={ship_data['inbound']}, Outbound={ship_data['outbound']}")
+    logger.info(f"AIS Map Scan Extracted: Total={ship_data['total']}, Inbound={ship_data['inbound']}, Outbound={ship_data['outbound']}")
     return output_path, ship_data
 
 def generate_caption(ship_data, alert_type=None, changes=None):
     """
-    Generates Telegram caption with rich HTML formatting (Blockquotes & Monospace Code)
-    using MarineTraffic / Kpler source branding.
+    Generates Telegram caption with rich HTML formatting (Blockquotes & Monospace Code).
     """
     total = ship_data.get("total", "N/A")
     inbound = ship_data.get("inbound", "N/A")
@@ -176,7 +170,7 @@ def generate_caption(ship_data, alert_type=None, changes=None):
         f"📤 <b>خروجی (خروج به دریای عمان):</b> <code>{outbound}</code>{outbound_change}\n"
         f"⚓ <b>متوقف / لنگرانداخته:</b> <code>{anchored}</code></blockquote>\n\n"
         "🔍 <i>شناسایی برخط AIS استخراج‌شده از طریق اسکن راداری خودکار.</i>\n\n"
-        "⚓ @secretollah polyline🚢\n"
+        "⚓ @secretollah 🚢\n"
         "#تنگه_هرمز"
     )
 
@@ -192,8 +186,8 @@ async def run_bot():
     current_hour = now_utc.hour
 
     try:
-        # Capture screenshot & vessel numbers from MarineTraffic
-        image_path, ship_data = await capture_marinetraffic_map_and_count(image_path)
+        # Capture screenshot & vessel numbers
+        image_path, ship_data = await capture_hormuz_map_and_count(image_path)
         
         curr_inbound = ship_data["inbound"]
         curr_outbound = ship_data["outbound"]

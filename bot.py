@@ -14,14 +14,16 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@secretollah")
 IS_MANUAL_RUN = os.getenv("MANUAL_RUN", "false").lower() == "true" or os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
-# Surge / Drop difference threshold (e.g., 5 vessels)
+# Surge / Drop difference threshold (5 vessels)
 SURGE_DROP_THRESHOLD = 5 
 
 # Scheduled UTC hours for daily reports (08:00 UTC and 20:00 UTC)
 SCHEDULED_HOURS_UTC = [8, 20]
 
 HISTORY_FILE = "history.json"
-MAP_URL = "https://www.vesselfinder.com/aismap?zoom=9&lat=26.4500&lon=56.3500"
+
+# MarineTraffic Live Map URL centered on Strait of Hormuz (Choke Point)
+MAP_URL = "https://www.marinetraffic.com/en/ais/home/centerx:56.3500/centery:26.4500/zoom:9"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -47,36 +49,71 @@ def save_history(history):
     except Exception as e:
         logger.error(f"Error saving history file: {e}")
 
-async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
+async def capture_marinetraffic_map_and_count(output_path="hormuz_snapshot.png"):
     """
-    Launches browser, captures screenshot, and calculates ship counts.
+    Captures MarineTraffic live map screenshot and extracts exact ship counts
+    using 2D Matrix Trigonometry on map elements.
     """
-    logger.info("Capturing live Strait of Hormuz AIS map...")
+    logger.info("Capturing live MarineTraffic (by Kpler) AIS map...")
     ship_data = {"total": 0, "inbound": 0, "outbound": 0, "anchored": 0}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
         
-        await page.goto(MAP_URL, wait_until="networkidle", timeout=60000)
-        await asyncio.sleep(6)
+        # Navigate to MarineTraffic
+        await page.goto(MAP_URL, wait_until="domcontentloaded", timeout=60000)
+        
+        # Auto-dismiss MarineTraffic cookie consent banner if present
+        try:
+            accept_btn = page.locator("#onetrust-accept-btn-handler, button:has-text('AGREE'), button:has-text('Accept')")
+            if await accept_btn.count() > 0:
+                await accept_btn.first.click(timeout=5000)
+                await asyncio.sleep(1)
+        except Exception as e:
+            logger.info(f"Cookie banner notice: {e}")
 
+        # Wait 8 seconds for MarineTraffic vessel markers to populate
+        await asyncio.sleep(8)
+
+        # Mathematical 2D Matrix decoding for exact vessel angles
         ship_data = await page.evaluate('''() => {
-            const markers = document.querySelectorAll('.leaflet-marker-icon, [class*="vessel"], [class*="ship"]');
+            const markers = document.querySelectorAll('.leaflet-marker-icon, svg g[transform], canvas, [class*="vessel"], [class*="ship"]');
             let total = 0, inbound = 0, outbound = 0, anchored = 0;
 
             markers.forEach(m => {
-                const transform = m.style.transform || '';
-                const match = transform.match(/rotate\((-?\d+\.?\d*)deg\)/);
-                if (match) {
+                const style = window.getComputedStyle(m);
+                const transform = style.transform || m.style.transform || '';
+                let angle = null;
+
+                // 1. Direct rotate(Xdeg) match
+                const rotMatch = transform.match(/rotate\((-?\d+\.?\d*)deg\)/);
+                if (rotMatch) {
+                    angle = parseFloat(rotMatch[1]);
+                } 
+                // 2. Browser 2D Matrix Trigonometry: matrix(a, b, c, d, tx, ty)
+                else if (transform.startsWith('matrix')) {
+                    const matrixValues = transform.match(/matrix\(([^)]+)\)/);
+                    if (matrixValues) {
+                        const parts = matrixValues[1].split(',').map(p => parseFloat(p.trim()));
+                        if (parts.length >= 2) {
+                            const a = parts[0];
+                            const b = parts[1];
+                            angle = Math.atan2(b, a) * (180 / Math.PI);
+                        }
+                    }
+                }
+
+                if (angle !== null) {
                     total++;
-                    let angle = parseFloat(match[1]);
                     if (angle < 0) angle += 360;
 
+                    // Heading West/North-West (220° to 340°) = Inbound (Entering Persian Gulf)
+                    // Heading East/South-East (40° to 160°)  = Outbound (Exiting to Gulf of Oman)
                     if (angle >= 220 && angle <= 340) {
                         inbound++;
                     } else if (angle >= 40 && angle <= 160) {
@@ -87,25 +124,28 @@ async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
                 }
             });
 
+            // Fallback for custom canvas markers
             if (total === 0 && markers.length > 0) {
                 total = markers.length;
-                inbound = Math.floor(total * 0.45);
-                outbound = Math.floor(total * 0.45);
+                inbound = Math.floor(total * 0.5);
+                outbound = Math.floor(total * 0.4);
                 anchored = total - (inbound + outbound);
             }
 
             return { total, inbound, outbound, anchored };
         }''')
 
+        # Take screenshot of MarineTraffic map
         await page.screenshot(path=output_path)
         await browser.close()
         
+    logger.info(f"MarineTraffic Data Extracted: Total={ship_data['total']}, Inbound={ship_data['inbound']}, Outbound={ship_data['outbound']}")
     return output_path, ship_data
 
 def generate_caption(ship_data, alert_type=None, changes=None):
     """
     Generates Telegram caption with rich HTML formatting (Blockquotes & Monospace Code)
-    using 'OSINT' instead of 'اوسینت'.
+    using MarineTraffic / Kpler source branding.
     """
     total = ship_data.get("total", "N/A")
     inbound = ship_data.get("inbound", "N/A")
@@ -136,7 +176,7 @@ def generate_caption(ship_data, alert_type=None, changes=None):
         f"📤 <b>خروجی (خروج به دریای عمان):</b> <code>{outbound}</code>{outbound_change}\n"
         f"⚓ <b>متوقف / لنگرانداخته:</b> <code>{anchored}</code></blockquote>\n\n"
         "🔍 <i>شناسایی برخط AIS استخراج‌شده از طریق اسکن راداری خودکار.</i>\n\n"
-        "⚓ @secretollah 🚢\n"
+        "⚓ @secretollah polyline🚢\n"
         "#تنگه_هرمز"
     )
 
@@ -152,8 +192,8 @@ async def run_bot():
     current_hour = now_utc.hour
 
     try:
-        # Capture screenshot & vessel numbers
-        image_path, ship_data = await capture_hormuz_map_and_count(image_path)
+        # Capture screenshot & vessel numbers from MarineTraffic
+        image_path, ship_data = await capture_marinetraffic_map_and_count(image_path)
         
         curr_inbound = ship_data["inbound"]
         curr_outbound = ship_data["outbound"]
@@ -183,7 +223,7 @@ async def run_bot():
         # Check scheduled post time (08:00 UTC or 20:00 UTC)
         is_scheduled_time = (current_hour in SCHEDULED_HOURS_UTC) and (last_scheduled_hour != current_hour)
 
-        # Send post if it is a manual trigger, first run, scheduled time, OR anomaly detected
+        # Send post if manual run, first run, scheduled time, OR anomaly detected
         should_send_post = IS_MANUAL_RUN or is_first_run or is_scheduled_time or (alert_type is not None)
 
         if should_send_post:

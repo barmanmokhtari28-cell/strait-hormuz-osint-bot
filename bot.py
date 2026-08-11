@@ -22,8 +22,12 @@ SCHEDULED_HOURS_UTC = [2, 8, 14, 20]
 
 HISTORY_FILE = "history.json"
 
-# Unblocked AIS Radar Map Endpoint
-MAP_URL = "https://www.vesselfinder.com/aismap?zoom=9&lat=26.4500&lon=56.3500"
+# Multi-Source Radar Endpoints (Failover Order)
+MAP_SOURCES = [
+    "https://www.vesselfinder.com/?lat=26.4500&lon=56.3500&zoom=9",
+    "https://www.myshiptracking.com/?lat=26.4500&lon=56.3500&zoom=9",
+    "https://www.vesselfinder.com/aismap?zoom=9&lat=26.4500&lon=56.3500"
+]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -49,14 +53,89 @@ def save_history(history):
     except Exception as e:
         logger.error(f"Error saving history file: {e}")
 
+async def dismiss_cookie_banners(page):
+    """Auto-clicks GDPR consent buttons and forcefully removes overlay banners."""
+    consent_selectors = [
+        "#onetrust-accept-btn-handler",
+        ".fc-cta-consent",
+        "button:has-text('Consent')",
+        "button:has-text('AGREE')",
+        "button:has-text('Accept')",
+        "button:has-text('Accept All')",
+        ".qc-cmp2-summary-buttons button",
+        "#qc-cmp2-ui button"
+    ]
+    for sel in consent_selectors:
+        try:
+            btn = page.locator(sel)
+            if await btn.count() > 0:
+                await btn.first.click(timeout=2000)
+                await asyncio.sleep(1)
+        except Exception:
+            pass
+
+    # Clean up DOM overlay elements
+    try:
+        await page.evaluate('''() => {
+            const overlays = document.querySelectorAll('.fc-ab-root, #onetrust-consent-sdk, .qc-cmp2-container, #qc-cmp2-ui, .ad-banner, #header, header');
+            overlays.forEach(e => e.remove());
+        }''')
+    except Exception:
+        pass
+
+async def scan_radar_source(page, url):
+    """Navigates to AIS radar source, dismisses overlays, and extracts vessel metrics."""
+    logger.info(f"Scanning AIS radar source: {url}")
+    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    await asyncio.sleep(2)
+    await dismiss_cookie_banners(page)
+    await asyncio.sleep(7)  # Allow AIS markers to render completely
+
+    # Extract ship markers and headings
+    ship_data = await page.evaluate('''() => {
+        const markers = document.querySelectorAll('.leaflet-marker-icon, svg g[transform], canvas, [class*="vessel"], [class*="ship"], img[src*="ship"]');
+        let total = 0, inbound = 0, outbound = 0, anchored = 0;
+
+        markers.forEach(m => {
+            const style = window.getComputedStyle(m);
+            const transform = style.transform || m.style.transform || '';
+            const src = m.src || '';
+
+            if (src.includes('tile') || src.includes('logo') || src.includes('control')) return;
+
+            let angle = null;
+            const rotMatch = transform.match(/rotate\((-?\d+\.?\d*)deg\)/);
+            if (rotMatch) {
+                angle = parseFloat(rotMatch[1]);
+            } else if (transform.startsWith('matrix')) {
+                const matrixValues = transform.match(/matrix\(([^)]+)\)/);
+                if (matrixValues) {
+                    const parts = matrixValues[1].split(',').map(p => parseFloat(p.trim()));
+                    if (parts.length >= 2) {
+                        angle = Math.atan2(parts[1], parts[0]) * (180 / Math.PI);
+                    }
+                }
+            }
+
+            if (angle !== null) {
+                total++;
+                if (angle < 0) angle += 360;
+                if (angle >= 220 && angle <= 340) inbound++;
+                else if (angle >= 40 && angle <= 160) outbound++;
+                else anchored++;
+            }
+        });
+
+        return { total, inbound, outbound, anchored };
+    }''')
+
+    return ship_data
+
 async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
     """
-    Captures live AIS radar map and extracts exact ship counts
-    by intercepting raw JSON AIS API network traffic.
+    Tries multiple AIS radar map sources to ensure real ship counts (20-60+ vessels) are captured.
     """
-    logger.info("Capturing live Strait of Hormuz AIS map & intercepting raw AIS transponder data...")
-    
-    intercepted_vessels = []
+    ship_data = {"total": 0, "inbound": 0, "outbound": 0, "anchored": 0}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -66,119 +145,29 @@ async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
         )
         page = await context.new_page()
 
-        # Intercept network API calls containing raw vessel JSON arrays
-        async def handle_response(response):
-            nonlocal intercepted_vessels
+        # Try sources sequentially until a rich AIS radar response is obtained
+        for source_url in MAP_SOURCES:
             try:
-                content_type = response.headers.get("content-type", "")
-                url = response.url.lower()
-                if "json" in content_type or "api" in url or "aismap" in url or "vessel" in url:
-                    data = await response.json()
-                    if isinstance(data, list):
-                        intercepted_vessels.extend(data)
-                    elif isinstance(data, dict):
-                        for key in ["vessels", "data", "ships", "rows", "aismap"]:
-                            if key in data and isinstance(data[key], list):
-                                intercepted_vessels.extend(data[key])
-            except Exception:
-                pass
-
-        page.on("response", handle_response)
-
-        # Navigate to map
-        await page.goto(MAP_URL, wait_until="networkidle", timeout=60000)
-        await asyncio.sleep(8)  # Wait for map tiles & AIS network responses
-
-        # Safeguard Check: Abort if anti-bot firewall blocks access
-        page_text = await page.content()
-        if "sorry, you have been blocked" in page_text.lower() or "access denied" in page_text.lower():
-            await browser.close()
-            raise Exception("Anti-bot firewall blocked map access. Screenshot aborted to protect channel.")
-
-        total, inbound, outbound, anchored = 0, 0, 0, 0
-
-        # Method 1: Process real intercepted AIS transponder JSON data
-        if intercepted_vessels:
-            unique_vessels = {}
-            for v in intercepted_vessels:
-                if isinstance(v, dict):
-                    vid = v.get("mmsi") or v.get("id") or v.get("name")
-                    if vid and vid not in unique_vessels:
-                        unique_vessels[vid] = v
-
-            for vid, v in unique_vessels.items():
-                cog = v.get("cog") if v.get("cog") is not None else v.get("course")
-                sog = v.get("sog") if v.get("sog") is not None else v.get("speed")
-
-                try:
-                    cog = float(cog) if cog is not None else None
-                    sog = float(sog) if sog is not None else 0.0
-                except (ValueError, TypeError):
-                    cog, sog = None, 0.0
-
-                total += 1
-                if sog < 0.8 or cog is None:
-                    anchored += 1
-                elif 220 <= cog <= 340:
-                    inbound += 1
-                elif 40 <= cog <= 160:
-                    outbound += 1
+                ship_data = await scan_radar_source(page, source_url)
+                if ship_data["total"] >= 3:
+                    logger.info(f"Success! {ship_data['total']} ships detected on {source_url}")
+                    break
                 else:
-                    anchored += 1
+                    logger.warning(f"Low ship count ({ship_data['total']}) on {source_url}. Trying next radar source...")
+            except Exception as e:
+                logger.error(f"Error scanning {source_url}: {e}")
 
-        # Method 2: DOM 2D Matrix fallback if network interception yielded no raw JSON
-        if total == 0:
-            dom_data = await page.evaluate('''() => {
-                const markers = document.querySelectorAll('.leaflet-marker-icon, svg g[transform], canvas, [class*="vessel"], [class*="ship"]');
-                let total = 0, inbound = 0, outbound = 0, anchored = 0;
-
-                markers.forEach(m => {
-                    const style = window.getComputedStyle(m);
-                    const transform = style.transform || m.style.transform || '';
-                    let angle = null;
-
-                    const rotMatch = transform.match(/rotate\((-?\d+\.?\d*)deg\)/);
-                    if (rotMatch) {
-                        angle = parseFloat(rotMatch[1]);
-                    } else if (transform.startsWith('matrix')) {
-                        const matrixValues = transform.match(/matrix\(([^)]+)\)/);
-                        if (matrixValues) {
-                            const parts = matrixValues[1].split(',').map(p => parseFloat(p.trim()));
-                            if (parts.length >= 2) {
-                                angle = Math.atan2(parts[1], parts[0]) * (180 / Math.PI);
-                            }
-                        }
-                    }
-
-                    if (angle !== null) {
-                        total++;
-                        if (angle < 0) angle += 360;
-                        if (angle >= 220 && angle <= 340) inbound++;
-                        else if (angle >= 40 && angle <= 160) outbound++;
-                        else anchored++;
-                    }
-                });
-
-                return { total, inbound, outbound, anchored };
-            }''')
-
-            total = dom_data["total"]
-            inbound = dom_data["inbound"]
-            outbound = dom_data["outbound"]
-            anchored = dom_data["anchored"]
+        # Final check
+        page_text = await page.content()
+        if "sorry, you have been blocked" in page_text.lower():
+            await browser.close()
+            raise Exception("Firewall blocked map access. Aborted to protect channel.")
 
         # Take screenshot of clean AIS radar map
         await page.screenshot(path=output_path)
         await browser.close()
-        
-    ship_data = {
-        "total": total,
-        "inbound": inbound,
-        "outbound": outbound,
-        "anchored": anchored
-    }
 
-    logger.info(f"Real AIS Data Extracted: Total={ship_data['total']}, Inbound={ship_data['inbound']}, Outbound={ship_data['outbound']}, Anchored={ship_data['anchored']}")
+    logger.info(f"Final AIS Metrics: Total={ship_data['total']}, Inbound={ship_data['inbound']}, Outbound={ship_data['outbound']}, Anchored={ship_data['anchored']}")
     return output_path, ship_data
 
 def generate_caption(ship_data, alert_type=None, changes=None):

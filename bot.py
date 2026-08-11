@@ -22,7 +22,7 @@ SCHEDULED_HOURS_UTC = [2, 8, 14, 20]
 
 HISTORY_FILE = "history.json"
 
-# Unblocked AIS Radar Map (VesselFinder Embed Endpoint)
+# Unblocked AIS Radar Map Endpoint
 MAP_URL = "https://www.vesselfinder.com/aismap?zoom=9&lat=26.4500&lon=56.3500"
 
 logging.basicConfig(
@@ -52,10 +52,11 @@ def save_history(history):
 async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
     """
     Captures live AIS radar map and extracts exact ship counts
-    using 2D Matrix Trigonometry on map elements with Cloudflare block checks.
+    by intercepting raw JSON AIS API network traffic.
     """
-    logger.info("Capturing live Strait of Hormuz AIS map...")
-    ship_data = {"total": 0, "inbound": 0, "outbound": 0, "anchored": 0}
+    logger.info("Capturing live Strait of Hormuz AIS map & intercepting raw AIS transponder data...")
+    
+    intercepted_vessels = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -64,10 +65,29 @@ async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
-        
-        # Navigate to unblocked map
+
+        # Intercept network API calls containing raw vessel JSON arrays
+        async def handle_response(response):
+            nonlocal intercepted_vessels
+            try:
+                content_type = response.headers.get("content-type", "")
+                url = response.url.lower()
+                if "json" in content_type or "api" in url or "aismap" in url or "vessel" in url:
+                    data = await response.json()
+                    if isinstance(data, list):
+                        intercepted_vessels.extend(data)
+                    elif isinstance(data, dict):
+                        for key in ["vessels", "data", "ships", "rows", "aismap"]:
+                            if key in data and isinstance(data[key], list):
+                                intercepted_vessels.extend(data[key])
+            except Exception:
+                pass
+
+        page.on("response", handle_response)
+
+        # Navigate to map
         await page.goto(MAP_URL, wait_until="networkidle", timeout=60000)
-        await asyncio.sleep(6)
+        await asyncio.sleep(8)  # Wait for map tiles & AIS network responses
 
         # Safeguard Check: Abort if anti-bot firewall blocks access
         page_text = await page.content()
@@ -75,66 +95,90 @@ async def capture_hormuz_map_and_count(output_path="hormuz_snapshot.png"):
             await browser.close()
             raise Exception("Anti-bot firewall blocked map access. Screenshot aborted to protect channel.")
 
-        # Mathematical 2D Matrix decoding for exact vessel angles
-        ship_data = await page.evaluate('''() => {
-            const markers = document.querySelectorAll('.leaflet-marker-icon, svg g[transform], canvas, [class*="vessel"], [class*="ship"]');
-            let total = 0, inbound = 0, outbound = 0, anchored = 0;
+        total, inbound, outbound, anchored = 0, 0, 0, 0
 
-            markers.forEach(m => {
-                const style = window.getComputedStyle(m);
-                const transform = style.transform || m.style.transform || '';
-                let angle = null;
+        # Method 1: Process real intercepted AIS transponder JSON data
+        if intercepted_vessels:
+            unique_vessels = {}
+            for v in intercepted_vessels:
+                if isinstance(v, dict):
+                    vid = v.get("mmsi") or v.get("id") or v.get("name")
+                    if vid and vid not in unique_vessels:
+                        unique_vessels[vid] = v
 
-                // 1. Direct rotate(Xdeg) match
-                const rotMatch = transform.match(/rotate\((-?\d+\.?\d*)deg\)/);
-                if (rotMatch) {
-                    angle = parseFloat(rotMatch[1]);
-                } 
-                // 2. Browser 2D Matrix Trigonometry: matrix(a, b, c, d, tx, ty)
-                else if (transform.startsWith('matrix')) {
-                    const matrixValues = transform.match(/matrix\(([^)]+)\)/);
-                    if (matrixValues) {
-                        const parts = matrixValues[1].split(',').map(p => parseFloat(p.trim()));
-                        if (parts.length >= 2) {
-                            const a = parts[0];
-                            const b = parts[1];
-                            angle = Math.atan2(b, a) * (180 / Math.PI);
+            for vid, v in unique_vessels.items():
+                cog = v.get("cog") if v.get("cog") is not None else v.get("course")
+                sog = v.get("sog") if v.get("sog") is not None else v.get("speed")
+
+                try:
+                    cog = float(cog) if cog is not None else None
+                    sog = float(sog) if sog is not None else 0.0
+                except (ValueError, TypeError):
+                    cog, sog = None, 0.0
+
+                total += 1
+                if sog < 0.8 or cog is None:
+                    anchored += 1
+                elif 220 <= cog <= 340:
+                    inbound += 1
+                elif 40 <= cog <= 160:
+                    outbound += 1
+                else:
+                    anchored += 1
+
+        # Method 2: DOM 2D Matrix fallback if network interception yielded no raw JSON
+        if total == 0:
+            dom_data = await page.evaluate('''() => {
+                const markers = document.querySelectorAll('.leaflet-marker-icon, svg g[transform], canvas, [class*="vessel"], [class*="ship"]');
+                let total = 0, inbound = 0, outbound = 0, anchored = 0;
+
+                markers.forEach(m => {
+                    const style = window.getComputedStyle(m);
+                    const transform = style.transform || m.style.transform || '';
+                    let angle = null;
+
+                    const rotMatch = transform.match(/rotate\((-?\d+\.?\d*)deg\)/);
+                    if (rotMatch) {
+                        angle = parseFloat(rotMatch[1]);
+                    } else if (transform.startsWith('matrix')) {
+                        const matrixValues = transform.match(/matrix\(([^)]+)\)/);
+                        if (matrixValues) {
+                            const parts = matrixValues[1].split(',').map(p => parseFloat(p.trim()));
+                            if (parts.length >= 2) {
+                                angle = Math.atan2(parts[1], parts[0]) * (180 / Math.PI);
+                            }
                         }
                     }
-                }
 
-                if (angle !== null) {
-                    total++;
-                    if (angle < 0) angle += 360;
-
-                    // Heading West/North-West (220° to 340°) = Inbound (Entering Persian Gulf)
-                    // Heading East/South-East (40° to 160°)  = Outbound (Exiting to Gulf of Oman)
-                    if (angle >= 220 && angle <= 340) {
-                        inbound++;
-                    } else if (angle >= 40 && angle <= 160) {
-                        outbound++;
-                    } else {
-                        anchored++;
+                    if (angle !== null) {
+                        total++;
+                        if (angle < 0) angle += 360;
+                        if (angle >= 220 && angle <= 340) inbound++;
+                        else if (angle >= 40 && angle <= 160) outbound++;
+                        else anchored++;
                     }
-                }
-            });
+                });
 
-            // Fallback for custom canvas markers
-            if (total === 0 && markers.length > 0) {
-                total = markers.length;
-                inbound = Math.floor(total * 0.45);
-                outbound = Math.floor(total * 0.45);
-                anchored = total - (inbound + outbound);
-            }
+                return { total, inbound, outbound, anchored };
+            }''')
 
-            return { total, inbound, outbound, anchored };
-        }''')
+            total = dom_data["total"]
+            inbound = dom_data["inbound"]
+            outbound = dom_data["outbound"]
+            anchored = dom_data["anchored"]
 
         # Take screenshot of clean AIS radar map
         await page.screenshot(path=output_path)
         await browser.close()
         
-    logger.info(f"AIS Map Scan Extracted: Total={ship_data['total']}, Inbound={ship_data['inbound']}, Outbound={ship_data['outbound']}")
+    ship_data = {
+        "total": total,
+        "inbound": inbound,
+        "outbound": outbound,
+        "anchored": anchored
+    }
+
+    logger.info(f"Real AIS Data Extracted: Total={ship_data['total']}, Inbound={ship_data['inbound']}, Outbound={ship_data['outbound']}, Anchored={ship_data['anchored']}")
     return output_path, ship_data
 
 def generate_caption(ship_data, alert_type=None, changes=None):
@@ -142,10 +186,10 @@ def generate_caption(ship_data, alert_type=None, changes=None):
     Generates Telegram caption with rich HTML formatting (Blockquotes & Monospace Code)
     including 4x daily report schedule and report timestamp.
     """
-    total = ship_data.get("total", "N/A")
-    inbound = ship_data.get("inbound", "N/A")
-    outbound = ship_data.get("outbound", "N/A")
-    anchored = ship_data.get("anchored", "N/A")
+    total = ship_data.get("total", 0)
+    inbound = ship_data.get("inbound", 0)
+    outbound = ship_data.get("outbound", 0)
+    anchored = ship_data.get("anchored", 0)
 
     # Current UTC date & time
     now_utc = datetime.now(timezone.utc)

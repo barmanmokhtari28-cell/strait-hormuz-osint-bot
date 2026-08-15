@@ -1,6 +1,9 @@
 {
-  "last_scheduled_hour": 8,
+  "date": "",
   "inbound": 0,
   "outbound": 0,
-  "total": 1
+  "total": 0,
+  "last_scheduled_hour": null,
+  "daily_inbound_mmsi": [],
+  "daily_outbound_mmsi": []
 }

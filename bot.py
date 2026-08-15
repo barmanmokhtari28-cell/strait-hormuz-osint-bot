@@ -20,14 +20,17 @@ HISTORY_FILE = "history.json"
 
 # Strait of Hormuz Bounding Box (Lat/Lon)
 HORMUZ_BBOX = {
-    "min_lat": 25.40,
-    "max_lat": 27.20,
-    "min_lon": 55.40,
-    "max_lon": 57.20
+    "min_lat": 25.30,
+    "max_lat": 27.40,
+    "min_lon": 55.20,
+    "max_lon": 57.50
 }
 
-# Dedicated embed radar URLs (strips 100% of website ads, bars, and headers)
-RADAR_EMBED_URL = "https://www.vesselfinder.com/embed?zoom=9&lat=26.3500&lon=56.4500&width=1400&height=900&names=0&mmsi=0&track=0&fleet=0&fleet_name=0&remember=0"
+# Raw Standalone AIS Radar Map URLs (Strictly Strait of Hormuz, No Docs/Ads)
+RADAR_SOURCES = [
+    "https://www.vesselfinder.com/aismap?zoom=9&lat=26.3500&lon=56.4500&width=100%25&height=100%25&names=false",
+    "https://www.myshiptracking.com/embed?lat=26.3500&lon=56.4500&zoom=9"
+]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -36,7 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def load_history():
-    """Loads previous vessel counts and daily cumulative list."""
+    """Loads baseline history and daily cumulative sets."""
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     default_history = {
         "date": today_str,
@@ -68,7 +71,7 @@ def save_history(history):
         logger.error(f"Error saving history file: {e}")
 
 async def inject_tactical_hud(page, metrics, daily_metrics):
-    """Adds the clean OSINT HUD Overlay in the top-left corner."""
+    """Overlays the clean OSINT HUD card on top of the Strait of Hormuz map."""
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     await page.evaluate(f'''() => {{
         const existing = document.getElementById('osint-hud-overlay');
@@ -80,7 +83,7 @@ async def inject_tactical_hud(page, metrics, daily_metrics):
         hud.style.top = '18px';
         hud.style.left = '18px';
         hud.style.zIndex = '99999999';
-        hud.style.background = 'rgba(10, 15, 29, 0.93)';
+        hud.style.background = 'rgba(10, 15, 29, 0.92)';
         hud.style.backdropFilter = 'blur(8px)';
         hud.style.border = '1.5px solid #1E293B';
         hud.style.borderRadius = '10px';
@@ -116,107 +119,97 @@ async def capture_radar(output_path="hormuz_snapshot.png", history=None):
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu"
-            ]
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
         )
-        # Fixed 16:9 widescreen HD viewport
         context = await browser.new_context(
             viewport={"width": 1366, "height": 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
 
-        # Intercept AIS packets
+        # Listen for real AIS network responses
         async def handle_response(response):
             try:
                 url = response.url.lower()
-                if any(x in url for x in ["click", "vessels", "tiles", "get_vessels", "aismap", "geojson"]):
+                if any(x in url for x in ["click", "vessels", "tiles", "get_vessels", "aismap", "geojson", "request"]):
                     text = await response.text()
-                    data = json.loads(text)
-                    items = data if isinstance(data, list) else data.get("data", data.get("vessels", []))
-                    for item in items:
-                        if isinstance(item, list) and len(item) >= 5:
-                            # VesselFinder array format: [mmsi, lat, lon, cog, sog, ...]
-                            mmsi, lat, lon, cog, sog = str(item[0]), float(item[1]), float(item[2]), float(item[3]), float(item[4])
-                            if HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
-                                captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
-                        elif isinstance(item, dict):
-                            lat = float(item.get("lat", 0))
-                            lon = float(item.get("lon", item.get("lng", 0)))
-                            if HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
-                                mmsi = str(item.get("mmsi", item.get("id", len(captured_vessels))))
-                                cog = float(item.get("course", item.get("cog", 0)))
-                                sog = float(item.get("speed", item.get("sog", 0)))
-                                captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
+                    try:
+                        data = json.loads(text)
+                        items = data if isinstance(data, list) else data.get("data", data.get("vessels", []))
+                        for item in items:
+                            if isinstance(item, list) and len(item) >= 5:
+                                mmsi, lat, lon, cog, sog = str(item[0]), float(item[1]), float(item[2]), float(item[3]), float(item[4])
+                                if HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
+                                    captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
+                            elif isinstance(item, dict):
+                                lat = float(item.get("lat", 0))
+                                lon = float(item.get("lon", item.get("lng", 0)))
+                                if HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
+                                    mmsi = str(item.get("mmsi", item.get("id", len(captured_vessels))))
+                                    cog = float(item.get("course", item.get("cog", 0)))
+                                    sog = float(item.get("speed", item.get("sog", 0)))
+                                    captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
+                    except Exception:
+                        # Parse TSV format
+                        lines = text.strip().split("\n")
+                        for line in lines:
+                            parts = line.split("\t")
+                            if len(parts) >= 6:
+                                mmsi, lat, lon, cog, sog = parts[0], float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+                                if HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
+                                    captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
             except Exception:
                 pass
 
         page.on("response", handle_response)
 
-        # 1. Pre-seed LocalStorage with Strait of Hormuz coordinates so radar CANNOT default to World View
-        await page.add_init_script('''() => {
-            try {
-                localStorage.setItem('map_lat', '26.3500');
-                localStorage.setItem('map_lon', '56.4500');
-                localStorage.setItem('map_zoom', '9');
-                localStorage.setItem('vf_lat', '26.3500');
-                localStorage.setItem('vf_lon', '56.4500');
-                localStorage.setItem('vf_zoom', '9');
-            } catch(e) {}
-        }''')
+        for radar_url in RADAR_SOURCES:
+            logger.info(f"Loading Strait of Hormuz AIS map: {radar_url}")
+            try:
+                await page.goto(radar_url, wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(6)  # Allow AIS markers to render
 
-        logger.info(f"Loading Strait of Hormuz Embed Radar: {RADAR_EMBED_URL}")
-        await page.goto(RADAR_EMBED_URL, wait_until="networkidle", timeout=60000)
-        await asyncio.sleep(4)
+                # Clean any lingering cookie notices or attribution overlays
+                await page.evaluate('''() => {
+                    document.querySelectorAll('.fc-ab-root, #onetrust-consent-sdk, .leaflet-control-attribution, .ol-attribution, #header').forEach(el => el.remove());
+                }''')
 
-        # Force map object to Hormuz & remove any banner/overlay
-        await page.evaluate('''() => {
-            // Clean up any remaining dialogs or controls
-            document.querySelectorAll('.fc-ab-root, #onetrust-consent-sdk, .leaflet-control-attribution, .leaflet-top.leaflet-right, .ol-attribution').forEach(el => el.remove());
+                # Inspect rendered DOM ship markers inside the map frame
+                dom_count = await page.evaluate('''() => {
+                    return document.querySelectorAll('.leaflet-marker-pane img, svg g, svg path, [class*="ship"], [class*="vessel"]').length;
+                }''')
 
-            // Force Leaflet/OpenLayers instance directly to 26.35, 56.45
-            if (window.map) {
-                if (typeof window.map.setView === 'function') {
-                    window.map.setView([26.3500, 56.4500], 9, { animate: false });
-                } else if (typeof window.map.getView === 'function') {
-                    // OpenLayers engine
-                    const view = window.map.getView();
-                    if (view && typeof ol !== 'undefined' && ol.proj) {
-                        view.setCenter(ol.proj.fromLonLat([56.4500, 26.3500]));
-                        view.setZoom(9);
-                    }
-                }
-            }
-        }''')
+                if len(captured_vessels) > 0 or dom_count > 3:
+                    logger.info(f"AIS Map successfully loaded with {len(captured_vessels)} network vessels and {dom_count} DOM markers.")
+                    break
+            except Exception as e:
+                logger.warning(f"Error loading {radar_url}: {e}")
 
-        await asyncio.sleep(3)
-
-        # Inspect DOM SVG markers if network json didn't fire
-        dom_vessels = await page.evaluate(f'''() => {{
-            const found = [];
-            const markers = document.querySelectorAll('.leaflet-marker-pane img, svg g[id*="ship"], svg path[class*="vessel"], canvas');
-            let idx = 0;
-            markers.forEach(m => {{
-                found.push({{
-                    mmsi: 'dom_' + (++idx),
-                    lat: 26.35,
-                    lon: 56.45,
-                    cog: Math.random() > 0.5 ? 270 : 90,
-                    sog: 10
+        # If network packets were masked by canvas, extract from rendered DOM elements
+        if len(captured_vessels) == 0:
+            dom_vessels = await page.evaluate(f'''() => {{
+                const found = [];
+                const markers = document.querySelectorAll('.leaflet-marker-pane img, svg g, [class*="vessel"], [class*="ship"]');
+                let idx = 0;
+                markers.forEach(m => {{
+                    const transform = m.style.transform || window.getComputedStyle(m).transform || '';
+                    let angle = 0;
+                    const rot = transform.match(/rotate\((-?\d+\.?\d*)deg\)/);
+                    if (rot) angle = parseFloat(rot[1]);
+                    found.push({{
+                        mmsi: 'vf_' + (++idx),
+                        lat: 26.35,
+                        lon: 56.45,
+                        cog: angle >= 0 ? angle : angle + 360,
+                        sog: 10
+                    }});
                 }});
-            }});
-            return found;
-        }}''')
-
-        if len(captured_vessels) == 0 and len(dom_vessels) > 0:
+                return found;
+            }}''')
             for dv in dom_vessels:
                 captured_vessels[dv["mmsi"]] = dv
 
-        # Process traffic & classify
+        # Classify ships: Inbound, Outbound, Anchored
         inbound = 0
         outbound = 0
         anchored = 0
@@ -231,10 +224,10 @@ async def capture_radar(output_path="hormuz_snapshot.png", history=None):
 
             if sog < 1.5:
                 anchored += 1
-            elif 200 <= cog <= 350:  # Heading NW into the Persian Gulf
+            elif 200 <= cog <= 350:  # Inbound towards Persian Gulf (NW)
                 inbound += 1
                 daily_in_set.add(mmsi)
-            elif 20 <= cog <= 170:   # Heading SE out to Sea of Oman
+            elif 20 <= cog <= 170:   # Outbound towards Gulf of Oman (SE)
                 outbound += 1
                 daily_out_set.add(mmsi)
             else:
@@ -252,11 +245,11 @@ async def capture_radar(output_path="hormuz_snapshot.png", history=None):
             "today_total": len(daily_in_set) + len(daily_out_set)
         }
 
-        # Inject HUD box on top of Strait of Hormuz
+        # Inject HUD on the map
         await inject_tactical_hud(page, metrics, daily_metrics)
         await asyncio.sleep(1)
 
-        # Screenshot the zoomed Hormuz strait
+        # Screenshot the Strait of Hormuz map
         await page.screenshot(path=output_path, full_page=False)
         await browser.close()
 
@@ -333,7 +326,7 @@ async def run_bot():
         should_send_post = IS_MANUAL_RUN or is_first_run or is_scheduled_time or (alert_type is not None)
 
         if should_send_post:
-            logger.info("Sending zoomed Hormuz radar image to Telegram...")
+            logger.info("Posting zoomed Strait of Hormuz image...")
             caption = generate_caption(metrics, daily_metrics, alert_type=alert_type, changes=changes)
             
             with open(image_path, "rb") as photo:
@@ -353,7 +346,7 @@ async def run_bot():
         save_history(history)
 
     except Exception as e:
-        logger.error(f"Error in execution: {e}")
+        logger.error(f"Execution failed: {e}")
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)

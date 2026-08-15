@@ -14,19 +14,20 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@secretollah")
 IS_MANUAL_RUN = os.getenv("MANUAL_RUN", "false").lower() == "true" or os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
-# Surge / Drop difference threshold
-SURGE_DROP_THRESHOLD = 5 
-
-# Scheduled UTC hours (02:00, 08:00, 14:00, 20:00 UTC)
+SURGE_DROP_THRESHOLD = 5
 SCHEDULED_HOURS_UTC = [2, 8, 14, 20]
-
 HISTORY_FILE = "history.json"
 
-# Strait of Hormuz Bounding Box (Choke point)
+# Exact Strait of Hormuz Choke Point Coordinates
+HORMUZ_LAT = 26.3500
+HORMUZ_LON = 56.4500
+HORMUZ_ZOOM = 9.5
+
+# Bounding Box for Hormuz Choke Point Traffic Filtering
 HORMUZ_BBOX = {
-    "min_lat": 25.50,
-    "max_lat": 27.20,
-    "min_lon": 55.50,
+    "min_lat": 25.40,
+    "max_lat": 27.30,
+    "min_lon": 55.40,
     "max_lon": 57.50
 }
 
@@ -42,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def load_history():
-    """Loads previous vessel counts and daily tracking sets from history.json."""
+    """Loads baseline history and daily cumulative sets."""
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     default_history = {
         "date": today_str,
@@ -57,7 +58,6 @@ def load_history():
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # Reset cumulative daily list if it's a new UTC day
                 if data.get("date") != today_str:
                     data["date"] = today_str
                     data["daily_inbound_mmsi"] = []
@@ -68,97 +68,147 @@ def load_history():
     return default_history
 
 def save_history(history):
-    """Saves updated history and daily sets to history.json."""
+    """Saves baseline history and daily cumulative sets."""
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
     except Exception as e:
         logger.error(f"Error saving history file: {e}")
 
-def parse_vessel_payload(text_data, captured_vessels):
-    """Parses raw AIS network responses (JSON or TSV) from radar providers."""
-    # Attempt JSON parsing
-    try:
-        data = json.loads(text_data)
-        items = data if isinstance(data, list) else data.get("vessels", data.get("data", []))
-        for item in items:
-            if isinstance(item, dict):
-                mmsi = str(item.get("mmsi") or item.get("id") or "")
-                lat = float(item.get("lat") or 0)
-                lon = float(item.get("lng") or item.get("lon") or 0)
-                cog = float(item.get("course") or item.get("cog") or item.get("heading") or 0)
-                sog = float(item.get("speed") or item.get("sog") or 0)
-                if mmsi and HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
-                    captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
-    except Exception:
-        # Attempt TSV/CSV format parsing (MyShipTracking format)
-        lines = text_data.strip().split("\n")
-        for line in lines:
-            parts = line.split("\t")
-            if len(parts) >= 6:
-                try:
-                    mmsi = parts[0].strip()
-                    lat = float(parts[1])
-                    lon = float(parts[2])
-                    cog = float(parts[3])
-                    sog = float(parts[4])
-                    if HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
-                        captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
-                except Exception:
-                    continue
-
-async def dismiss_overlays_and_clean_ui(page):
-    """Removes all ads, headers, search bars, and popups to prepare a clear map."""
-    try:
-        # Dismiss standard GDPR & Cookie banners
-        for sel in ["#onetrust-accept-btn-handler", ".fc-cta-consent", "button:has-text('Consent')", "button:has-text('Accept')"]:
-            btn = page.locator(sel)
-            if await btn.count() > 0:
-                await btn.first.click(timeout=1500)
-    except Exception:
-        pass
-
-    # Clean UI clutter
+async def prepare_and_zoom_map(page):
+    """
+    1. Removes all ads, headers, sidebars, search bars.
+    2. Makes map take full 100% width and height.
+    3. Programmatically forces the map view to zoom directly onto Strait of Hormuz.
+    """
     await page.evaluate('''() => {
-        const selectors = [
-            'header', '#header', '.header', '#top-nav', '.fc-ab-root', 
-            '#onetrust-consent-sdk', '.qc-cmp2-container', '.ad-banner', 
-            '.leaflet-control-zoom', '.leaflet-control-layers', '.leaflet-top.leaflet-right',
-            '.search-box', '#search', '.side-panel', '.site-logo', '#map-controls'
+        // Remove ads, banners, navbars, side panels
+        const junk = [
+            'header', '#header', '.header', '#top-nav', '.fc-ab-root',
+            '#onetrust-consent-sdk', '.qc-cmp2-container', '.ad-banner',
+            '.sidebar', '#sidebar', '.right-banner', '#right-col',
+            '.leaflet-control-zoom', '.leaflet-control-layers', '.search-box',
+            'iframe', 'ins.adsbygoogle', '#google_ads_iframe', '.advertisement',
+            'div[class*="banner"]', 'div[id*="ad_"]', 'div[class*="ad_"]',
+            'div[id*="google"]'
         ];
-        selectors.forEach(sel => {
+        junk.forEach(sel => {
             document.querySelectorAll(sel).forEach(el => el.remove());
         });
+
+        // Expand map container to true 100% fullscreen
+        const mapElements = document.querySelectorAll('#map, .map-container, #map-canvas, .leaflet-container');
+        mapElements.forEach(el => {
+            el.style.width = '100vw';
+            el.style.height = '100vh';
+            el.style.position = 'fixed';
+            el.style.top = '0';
+            el.style.left = '0';
+            el.style.zIndex = '1';
+        });
+
+        // Force Leaflet/OpenLayers/Mapbox map centering
+        try {
+            if (window.map && typeof window.map.setView === 'function') {
+                window.map.setView([26.3500, 56.4500], 9);
+                window.map.invalidateSize();
+            }
+            if (window.MST && window.MST.map) {
+                window.MST.map.setView([26.3500, 56.4500], 9);
+                window.MST.map.invalidateSize();
+            }
+        } catch(e) {}
     }''')
 
+async def extract_vessels_from_page(page, captured_vessels):
+    """Extracts live AIS vessels rendered inside the DOM and window JS state."""
+    vessels = await page.evaluate(f'''() => {{
+        const results = [];
+        const minLat = {HORMUZ_BBOX['min_lat']};
+        const maxLat = {HORMUZ_BBOX['max_lat']};
+        const minLon = {HORMUZ_BBOX['min_lon']};
+        const maxLon = {HORMUZ_BBOX['max_lon']};
+
+        // Check global JS vessel arrays
+        const sources = [window.vessels, window.all_vessels, window.vessels_list, (window.MST && window.MST.vessels)];
+        for (const src of sources) {{
+            if (src && typeof src === 'object') {{
+                const list = Array.isArray(src) ? src : Object.values(src);
+                list.forEach(v => {{
+                    if (v && (v.lat || v.latitude)) {{
+                        const lat = parseFloat(v.lat || v.latitude);
+                        const lon = parseFloat(v.lng || v.lon || v.longitude);
+                        const cog = parseFloat(v.course || v.cog || v.heading || 0);
+                        const sog = parseFloat(v.speed || v.sog || 0);
+                        const mmsi = String(v.mmsi || v.id || Math.random());
+                        if (lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon) {{
+                            results.push({{ mmsi, lat, lon, cog, sog }});
+                        }}
+                    }}
+                }});
+            }}
+        }}
+
+        // If JS array not directly exposed, inspect Leaflet marker layers
+        if (results.length === 0 && window.map && window.map._layers) {{
+            Object.values(window.map._layers).forEach(layer => {{
+                if (layer._latlng) {{
+                    const lat = layer._latlng.lat;
+                    const lon = layer._latlng.lng;
+                    if (lat >= minLat && lat <= maxLat && lon >= minLon && lon <= maxLon) {{
+                        let cog = 0;
+                        if (layer.options && layer.options.rotationAngle) {{
+                            cog = layer.options.rotationAngle;
+                        }}
+                        results.push({{
+                            mmsi: String(layer._leaflet_id || Math.random()),
+                            lat: lat,
+                            lon: lon,
+                            cog: cog,
+                            sog: 10
+                        }});
+                    }}
+                }}
+            }});
+        }}
+
+        return results;
+    }}''')
+
+    for v in vessels:
+        captured_vessels[v["mmsi"]] = v
+
 async def inject_tactical_hud(page, metrics, daily_metrics):
-    """Injects a high-visibility OSINT Tactical HUD on top of the screenshot."""
+    """Overlays the clean OSINT HUD box in the top-left."""
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     await page.evaluate(f'''() => {{
+        const existing = document.getElementById('osint-hud-overlay');
+        if (existing) existing.remove();
+
         const hud = document.createElement('div');
         hud.id = 'osint-hud-overlay';
-        hud.style.position = 'absolute';
-        hud.style.top = '15px';
-        hud.style.left = '15px';
-        hud.style.zIndex = '999999';
-        hud.style.background = 'rgba(10, 15, 29, 0.88)';
-        hud.style.backdropFilter = 'blur(6px)';
-        hud.style.border = '1px solid #1E293B';
-        hud.style.borderRadius = '10px';
-        hud.style.padding = '14px 18px';
+        hud.style.position = 'fixed';
+        hud.style.top = '20px';
+        hud.style.left = '20px';
+        hud.style.zIndex = '9999999';
+        hud.style.background = 'rgba(10, 15, 29, 0.92)';
+        hud.style.backdropFilter = 'blur(8px)';
+        hud.style.border = '1.5px solid #1E293B';
+        hud.style.borderRadius = '12px';
+        hud.style.padding = '16px 20px';
         hud.style.color = '#FFFFFF';
         hud.style.fontFamily = 'monospace, sans-serif';
-        hud.style.boxShadow = '0 8px 24px rgba(0,0,0,0.6)';
+        hud.style.boxShadow = '0 10px 30px rgba(0,0,0,0.7)';
         hud.style.pointerEvents = 'none';
 
         hud.innerHTML = `
-            <div style="font-size: 14px; font-weight: bold; color: #38BDF8; margin-bottom: 6px; letter-spacing: 0.5px;">
+            <div style="font-size: 15px; font-weight: bold; color: #38BDF8; margin-bottom: 6px; letter-spacing: 0.5px;">
                 ⚓ STRAIT OF HORMUZ AIS RADAR
             </div>
             <div style="font-size: 11px; color: #94A3B8; margin-bottom: 10px;">
-                🕒 ${{'{now_str}'}} | 26°27'N 56°21'E
+                🕒 {now_str} | 26°27'N 56°21'E
             </div>
-            <div style="border-top: 1px solid #334155; padding-top: 8px; font-size: 12px; line-height: 1.6;">
+            <div style="border-top: 1px solid #334155; padding-top: 8px; font-size: 13px; line-height: 1.7;">
                 <div>🚢 <b>Active in Strait:</b> <span style="color: #F8FAFC; font-weight: bold;">{metrics['total']}</span></div>
                 <div>📥 <b>Inbound (to Gulf):</b> <span style="color: #34D399; font-weight: bold;">{metrics['inbound']}</span></div>
                 <div>📤 <b>Outbound (to Sea):</b> <span style="color: #F87171; font-weight: bold;">{metrics['outbound']}</span></div>
@@ -172,43 +222,64 @@ async def inject_tactical_hud(page, metrics, daily_metrics):
     }}''')
 
 async def capture_radar(output_path="hormuz_snapshot.png", history=None):
-    """Loads map, captures AIS responses, updates daily transits, and saves clean screenshot."""
     captured_vessels = {}
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-web-security"]
+        )
         context = await browser.new_context(
             viewport={"width": 1400, "height": 900},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
 
-        # Intercept AIS data responses
+        # Listen for AIS network payloads
         async def handle_response(response):
             try:
                 url = response.url.lower()
                 if any(k in url for k in ["vessel", "ais", "request", "tile", "get"]):
-                    body = await response.text()
-                    parse_vessel_payload(body, captured_vessels)
+                    text = await response.text()
+                    lines = text.strip().split("\n")
+                    for line in lines:
+                        parts = line.split("\t")
+                        if len(parts) >= 6:
+                            try:
+                                mmsi = parts[0].strip()
+                                lat = float(parts[1])
+                                lon = float(parts[2])
+                                cog = float(parts[3])
+                                sog = float(parts[4])
+                                if HORMUZ_BBOX["min_lat"] <= lat <= HORMUZ_BBOX["max_lat"] and HORMUZ_BBOX["min_lon"] <= lon <= HORMUZ_BBOX["max_lon"]:
+                                    captured_vessels[mmsi] = {"mmsi": mmsi, "lat": lat, "lon": lon, "cog": cog, "sog": sog}
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
         page.on("response", handle_response)
 
         for source_url in MAP_SOURCES:
-            logger.info(f"Navigating to: {source_url}")
+            logger.info(f"Loading radar: {source_url}")
             try:
-                await page.goto(source_url, wait_until="networkidle", timeout=45000)
-                await asyncio.sleep(6)  # Give time to receive AIS stream packets
-                await dismiss_overlays_and_clean_ui(page)
-
-                if len(captured_vessels) >= 5:
-                    logger.info(f"Successfully captured {len(captured_vessels)} live vessels!")
+                await page.goto(source_url, wait_until="domcontentloaded", timeout=45000)
+                await asyncio.sleep(5)
+                
+                # Zoom into Strait of Hormuz and wipe out all ads/sidebars
+                await prepare_and_zoom_map(page)
+                await asyncio.sleep(3)
+                
+                # Extract vessels from page memory
+                await extract_vessels_from_page(page, captured_vessels)
+                
+                if len(captured_vessels) >= 3:
+                    logger.info(f"Detected {len(captured_vessels)} ships in Hormuz!")
                     break
             except Exception as e:
-                logger.warning(f"Source {source_url} attempt error: {e}")
+                logger.warning(f"Error loading {source_url}: {e}")
 
-        # Classify instantaneous traffic
+        # Classify ships
         inbound = 0
         outbound = 0
         anchored = 0
@@ -221,24 +292,18 @@ async def capture_radar(output_path="hormuz_snapshot.png", history=None):
             sog = v["sog"]
             mmsi = v["mmsi"]
 
-            if sog < 2.0:
+            if sog < 1.5:
                 anchored += 1
-            elif 210 <= cog <= 350:  # Inbound towards Persian Gulf (NW)
+            elif 210 <= cog <= 350:  # Heading NW into Persian Gulf
                 inbound += 1
                 daily_in_set.add(mmsi)
-            elif 30 <= cog <= 170:   # Outbound towards Gulf of Oman (SE)
+            elif 30 <= cog <= 170:   # Heading SE out to Sea of Oman
                 outbound += 1
                 daily_out_set.add(mmsi)
             else:
                 anchored += 1
 
         total = len(captured_vessels)
-        
-        # Fallback if canvas map rendered without exposing plain text packets
-        if total == 0:
-            total = inbound = outbound = anchored = 0
-
-        # Update daily sets
         history["daily_inbound_mmsi"] = list(daily_in_set)
         history["daily_outbound_mmsi"] = list(daily_out_set)
 
@@ -249,16 +314,15 @@ async def capture_radar(output_path="hormuz_snapshot.png", history=None):
             "today_total": len(daily_in_set) + len(daily_out_set)
         }
 
-        # Inject HUD and take screenshot
+        # Inject HUD and capture clean screenshot of Strait of Hormuz only
         await inject_tactical_hud(page, metrics, daily_metrics)
         await asyncio.sleep(1)
-        await page.screenshot(path=output_path)
+        await page.screenshot(path=output_path, full_page=False)
         await browser.close()
 
     return output_path, metrics, daily_metrics
 
 def generate_caption(metrics, daily_metrics, alert_type=None, changes=None):
-    """Generates informative Telegram caption in Persian with live & daily cumulative metrics."""
     now_utc = datetime.now(timezone.utc)
     date_str = now_utc.strftime("%Y-%m-%d")
     time_str = now_utc.strftime("%H:%M UTC")
@@ -329,7 +393,7 @@ async def run_bot():
         should_send_post = IS_MANUAL_RUN or is_first_run or is_scheduled_time or (alert_type is not None)
 
         if should_send_post:
-            logger.info("Posting report to Telegram...")
+            logger.info("Posting zoomed Hormuz report to Telegram...")
             caption = generate_caption(metrics, daily_metrics, alert_type=alert_type, changes=changes)
             
             with open(image_path, "rb") as photo:
@@ -343,7 +407,6 @@ async def run_bot():
             if is_scheduled_time or is_first_run:
                 history["last_scheduled_hour"] = current_hour
 
-        # Save history
         history["inbound"] = metrics["inbound"]
         history["outbound"] = metrics["outbound"]
         history["total"] = metrics["total"]

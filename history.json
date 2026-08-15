@@ -2,7 +2,7 @@
   "date": "2026-08-15",
   "inbound": 0,
   "outbound": 0,
-  "total": 0,
+  "total": 3,
   "last_scheduled_hour": null,
   "daily_inbound_mmsi": [],
   "daily_outbound_mmsi": []

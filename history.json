@@ -1,9 +1,9 @@
 {
-  "date": "2026-08-28",
+  "date": "2026-08-29",
   "inbound": 0,
   "outbound": 0,
   "total": 3,
-  "last_scheduled_hour": 20,
+  "last_scheduled_hour": 2,
   "daily_inbound_mmsi": [],
   "daily_outbound_mmsi": []
 }

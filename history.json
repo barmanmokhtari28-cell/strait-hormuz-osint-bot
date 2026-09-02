@@ -3,7 +3,7 @@
   "inbound": 0,
   "outbound": 0,
   "total": 1,
-  "last_scheduled_hour": 20,
+  "last_scheduled_hour": 14,
   "daily_inbound_mmsi": [],
   "daily_outbound_mmsi": []
 }

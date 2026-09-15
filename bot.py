@@ -23,8 +23,11 @@ IS_MANUAL_RUN = os.getenv("MANUAL_RUN", "false").lower() == "true" or os.getenv(
 SCHEDULED_HOURS_UTC = [2, 8, 14, 20]
 HISTORY_FILE = "history.json"
 
-# Strait of Hormuz Bounding Box: [min_lat, min_lon], [max_lat, max_lon]
-HORMUZ_BOX = [[25.30, 55.20], [27.40, 57.50]]
+# Strait of Hormuz + Immediate Transit Approaches (Bandar Abbas / Musandam / UAE approach)
+MIN_LAT = 24.80
+MAX_LAT = 27.60
+MIN_LON = 54.50
+MAX_LON = 57.80
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -60,34 +63,50 @@ def save_history(history):
     except Exception as e:
         logger.error(f"Error saving history: {e}")
 
-async def fetch_live_ais(duration_seconds=50):
-    """Subscribes to raw satellite and coastal AIS broadcasts for the Strait of Hormuz."""
+async def fetch_live_ais(duration_seconds=55):
+    """Subscribes to live AIS stream with correct Top-Left to Bottom-Right corner order."""
     vessels = {}
+    
+    # AISStream strictly requires: [[[MAX_LAT, MIN_LON], [MIN_LAT, MAX_LON]]]
     subscription = {
         "APIKey": AISSTREAM_API_KEY,
-        "BoundingBoxes": [HORMUZ_BOX],
+        "BoundingBoxes": [
+            [
+                [MAX_LAT, MIN_LON],
+                [MIN_LAT, MAX_LON]
+            ]
+        ],
         "FilterMessageTypes": ["PositionReport", "StandardClassBPositionReport", "ShipStaticData"]
     }
 
     logger.info("Connecting to AISStream live WebSocket...")
     try:
-        # Fixed: Removed incompatible 'timeout' kwarg to support all websockets versions
         async with websockets.connect("wss://stream.aisstream.io/v0/stream", ping_interval=20) as ws:
             await ws.send(json.dumps(subscription))
-            logger.info("Subscription sent. Listening for real-time AIS transponder reports...")
+            logger.info("Subscription sent. Listening for incoming AIS transponder data...")
             start_time = asyncio.get_event_loop().time()
+            message_count = 0
 
             while asyncio.get_event_loop().time() - start_time < duration_seconds:
                 try:
                     raw_data = await asyncio.wait_for(ws.recv(), timeout=8.0)
                     msg = json.loads(raw_data)
+
+                    # Log any server confirmation or error alerts
+                    if "error" in msg:
+                        logger.error(f"AISStream Server Error: {msg['error']}")
+                        break
+                    
+                    msg_type = msg.get("MessageType")
+                    if msg_type == "SubscriptionConfirmation":
+                        logger.info("AISStream confirmed active subscription! Receiving stream...")
+                        continue
+
                     mmsi = str(msg.get("MetaData", {}).get("MMSI", ""))
                     if not mmsi:
                         continue
 
-                    msg_type = msg.get("MessageType")
                     pos = None
-
                     if msg_type == "PositionReport":
                         pos = msg.get("Message", {}).get("PositionReport", {})
                     elif msg_type == "StandardClassBPositionReport":
@@ -100,7 +119,8 @@ async def fetch_live_ais(duration_seconds=50):
                         sog = pos.get("Sog", 0.0)
 
                         if lat is not None and lon is not None:
-                            if HORMUZ_BOX[0][0] <= lat <= HORMUZ_BOX[1][0] and HORMUZ_BOX[0][1] <= lon <= HORMUZ_BOX[1][1]:
+                            if MIN_LAT <= lat <= MAX_LAT and MIN_LON <= lon <= MAX_LON:
+                                message_count += 1
                                 if mmsi not in vessels:
                                     vessels[mmsi] = {}
                                 vessels[mmsi].update({
@@ -121,10 +141,12 @@ async def fetch_live_ais(duration_seconds=50):
                 except asyncio.TimeoutError:
                     continue
 
-    except Exception as e:
-        logger.error(f"WebSocket connection error: {e}", exc_info=True)
+            logger.info(f"Total AIS messages processed: {message_count}")
 
-    logger.info(f"Successfully collected {len(vessels)} authentic vessels inside the Strait.")
+    except Exception as e:
+        logger.error(f"WebSocket connection issue: {e}", exc_info=True)
+
+    logger.info(f"Successfully collected {len(vessels)} authentic vessels in the Strait of Hormuz.")
     return vessels
 
 def classify_traffic(vessels, history):
@@ -149,11 +171,11 @@ def classify_traffic(vessels, history):
         if sog < 1.8:
             v["status"] = "anchored"
             anchored += 1
-        elif 200 <= cog <= 345:  # Northwest heading into Gulf
+        elif 200 <= cog <= 345:  # Heading Northwest into Persian Gulf
             v["status"] = "inbound"
             inbound += 1
             daily_in.add(mmsi)
-        elif 25 <= cog <= 175:   # Southeast heading into Gulf of Oman
+        elif 25 <= cog <= 175:   # Heading Southeast into Sea of Oman
             v["status"] = "outbound"
             outbound += 1
             daily_out.add(mmsi)
@@ -179,23 +201,23 @@ def classify_traffic(vessels, history):
     return metrics, daily_metrics
 
 def render_radar_map(vessels, metrics, daily_metrics, output_path="hormuz_snapshot.png"):
-    """Generates an OSINT tactical dark basemap and stamps the HUD overlay."""
+    """Generates an OSINT tactical dark basemap with ship markers and HUD."""
     tile_url = "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png"
     m = StaticMap(1366, 768, url_template=tile_url)
 
-    # Plot ships by movement status
+    # Plot ship markers by status
     for v in vessels.values():
         color = "#FBBF24"  # Anchored (Yellow)
         if v.get("status") == "inbound":
-            color = "#34D399"  # Inbound (Emerald Green)
+            color = "#34D399"  # Inbound (Green)
         elif v.get("status") == "outbound":
             color = "#F87171"  # Outbound (Red)
         m.add_marker(CircleMarker((v["lon"], v["lat"]), color, 6))
 
-    image = m.render(zoom=9, center=[56.45, 26.35])
+    image = m.render(zoom=9, center=[56.35, 26.30])
     image.save(output_path)
 
-    # Stamp Tactical HUD on the saved map
+    # Stamp Tactical HUD
     fig, ax = plt.subplots(figsize=(13.66, 7.68), dpi=100)
     img_data = plt.imread(output_path)
     ax.imshow(img_data)
@@ -236,7 +258,7 @@ def generate_caption(metrics, daily_metrics):
     return (
         "🚢 <b>گزارش ترافیک و پایش ناوبری تنگه هرمز (AIS زنده)</b> 🚨\n\n"
         f"📅 <b>تاریخ و زمان:</b> <code>{now_utc.strftime('%Y-%m-%d | %H:%M UTC')}</code>\n"
-        "📍 <b>منطقه پایش:</b> <code>تنگه هرمز (سیگنال‌های خام ماهواره‌ای و ساحلی)</code>\n\n"
+        "📍 <b>منطقه پایش:</b> <code>تنگه هرمز (سیگنال‌های زنده راداری AIS)</code>\n\n"
         "<blockquote>📊 <b>وضعیت ترافیک لحظه‌ای:</b>\n"
         f"🚢 <b>کل شناورهای رهگیری شده:</b> <code>{metrics['total']}</code>\n"
         f"📥 <b>ورودی (به سمت خلیج فارس):</b> <code>{metrics['inbound']}</code> فروند\n"
@@ -247,7 +269,7 @@ def generate_caption(metrics, daily_metrics):
         f"🔹 <b>مجموع شناورهای ورودی:</b> <code>{daily_metrics['today_inbound']}</code>\n"
         f"🔸 <b>مجموع شناورهای خروجی:</b> <code>{daily_metrics['today_outbound']}</code>\n"
         f"🌐 <b>کل ثبت تردد امروز:</b> <code>{daily_metrics['today_total']}</code> فروند</blockquote>\n\n"
-        "🔍 <i>داده‌ها بدون واسطه از فرستنده‌های AIS ماهواره‌ای استخراج شده‌اند.</i>\n\n"
+        "🔍 <i>داده‌ها بدون واسطه از فرستنده‌های AIS ماهواره‌ای و ساحلی استخراج شده‌اند.</i>\n\n"
         "⚓ @secretollah 🚢\n"
         "#تنگه_هرمز #نفتکش #OSINT"
     )
@@ -263,9 +285,9 @@ async def run_bot():
     current_hour = datetime.now(timezone.utc).hour
 
     try:
-        vessels = await fetch_live_ais(duration_seconds=50)
+        vessels = await fetch_live_ais(duration_seconds=55)
         if len(vessels) == 0:
-            logger.warning("No vessels captured in stream window; aborting.")
+            logger.warning("No vessels captured in stream window; aborting to avoid blank post.")
             return
 
         metrics, daily_metrics = classify_traffic(vessels, history)

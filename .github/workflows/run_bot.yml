@@ -2,12 +2,11 @@ name: Strait of Hormuz OSINT Radar
 
 on:
   schedule:
-    # Runs at 02:00, 08:00, 14:00, 20:00 UTC
     - cron: '0 2,8,14,20 * * *'
-  workflow_dispatch: # Allows running manually with one click
+  workflow_dispatch:
 
 permissions:
-  contents: write # Needed to commit history.json
+  contents: write
 
 jobs:
   run-osint-bot:
@@ -27,12 +26,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          playwright install chromium --with-deps
 
       - name: Run AIS Radar Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
           MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' }}
         run: python bot.py
 

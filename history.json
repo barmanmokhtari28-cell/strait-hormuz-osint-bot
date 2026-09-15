@@ -6,6 +6,6 @@
   "last_scheduled_hour": 8,
   "daily_inbound_mmsi": [],
   "daily_outbound_mmsi": [],
-  "daily_inbound": 6,
-  "daily_outbound": 6
+  "daily_inbound": 10,
+  "daily_outbound": 10
 }

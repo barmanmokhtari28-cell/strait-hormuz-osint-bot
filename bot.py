@@ -66,55 +66,65 @@ async def fetch_live_ais(duration_seconds=50):
     subscription = {
         "APIKey": AISSTREAM_API_KEY,
         "BoundingBoxes": [HORMUZ_BOX],
-        "FilterMessageTypes": ["PositionReport", "ShipStaticData"]
+        "FilterMessageTypes": ["PositionReport", "StandardClassBPositionReport", "ShipStaticData"]
     }
 
     logger.info("Connecting to AISStream live WebSocket...")
     try:
-        async with websockets.connect("wss://stream.aisstream.io/v0/stream", ping_interval=20, timeout=15) as ws:
+        # Fixed: Removed incompatible 'timeout' kwarg to support all websockets versions
+        async with websockets.connect("wss://stream.aisstream.io/v0/stream", ping_interval=20) as ws:
             await ws.send(json.dumps(subscription))
+            logger.info("Subscription sent. Listening for real-time AIS transponder reports...")
             start_time = asyncio.get_event_loop().time()
 
             while asyncio.get_event_loop().time() - start_time < duration_seconds:
                 try:
-                    raw_data = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    raw_data = await asyncio.wait_for(ws.recv(), timeout=8.0)
                     msg = json.loads(raw_data)
                     mmsi = str(msg.get("MetaData", {}).get("MMSI", ""))
                     if not mmsi:
                         continue
 
                     msg_type = msg.get("MessageType")
+                    pos = None
+
                     if msg_type == "PositionReport":
-                        pos = msg["Message"]["PositionReport"]
+                        pos = msg.get("Message", {}).get("PositionReport", {})
+                    elif msg_type == "StandardClassBPositionReport":
+                        pos = msg.get("Message", {}).get("StandardClassBPositionReport", {})
+
+                    if pos:
                         lat = pos.get("Latitude")
                         lon = pos.get("Longitude")
                         cog = pos.get("Cog", 0.0)
                         sog = pos.get("Sog", 0.0)
 
-                        if HORMUZ_BOX[0][0] <= lat <= HORMUZ_BOX[1][0] and HORMUZ_BOX[0][1] <= lon <= HORMUZ_BOX[1][1]:
-                            if mmsi not in vessels:
-                                vessels[mmsi] = {}
-                            vessels[mmsi].update({
-                                "mmsi": mmsi,
-                                "name": msg.get("MetaData", {}).get("ShipName", "UNKNOWN").strip(),
-                                "lat": lat,
-                                "lon": lon,
-                                "cog": cog,
-                                "sog": sog
-                            })
+                        if lat is not None and lon is not None:
+                            if HORMUZ_BOX[0][0] <= lat <= HORMUZ_BOX[1][0] and HORMUZ_BOX[0][1] <= lon <= HORMUZ_BOX[1][1]:
+                                if mmsi not in vessels:
+                                    vessels[mmsi] = {}
+                                vessels[mmsi].update({
+                                    "mmsi": mmsi,
+                                    "name": msg.get("MetaData", {}).get("ShipName", "UNKNOWN").strip(),
+                                    "lat": lat,
+                                    "lon": lon,
+                                    "cog": cog,
+                                    "sog": sog
+                                })
 
                     elif msg_type == "ShipStaticData":
-                        static_info = msg["Message"]["ShipStaticData"]
+                        static_info = msg.get("Message", {}).get("ShipStaticData", {})
                         ship_type = static_info.get("Type", 0)
                         if mmsi in vessels:
                             vessels[mmsi]["type"] = ship_type
 
                 except asyncio.TimeoutError:
                     continue
-    except Exception as e:
-        logger.error(f"WebSocket error during stream: {e}")
 
-    logger.info(f"Successfully collected {len(vessels)} live vessels inside the Strait.")
+    except Exception as e:
+        logger.error(f"WebSocket connection error: {e}", exc_info=True)
+
+    logger.info(f"Successfully collected {len(vessels)} authentic vessels inside the Strait.")
     return vessels
 
 def classify_traffic(vessels, history):
@@ -132,7 +142,7 @@ def classify_traffic(vessels, history):
         mmsi = v.get("mmsi")
         stype = v.get("type", 0)
 
-        # Marine AIS Type 80-89: Crude/Chemical/Gas Tankers
+        # Marine AIS Type 80-89: Crude / Chemical / Gas Tankers
         if 80 <= stype <= 89:
             tankers += 1
 
@@ -173,7 +183,7 @@ def render_radar_map(vessels, metrics, daily_metrics, output_path="hormuz_snapsh
     tile_url = "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png"
     m = StaticMap(1366, 768, url_template=tile_url)
 
-    # Plot ships by status
+    # Plot ships by movement status
     for v in vessels.values():
         color = "#FBBF24"  # Anchored (Yellow)
         if v.get("status") == "inbound":
@@ -185,7 +195,7 @@ def render_radar_map(vessels, metrics, daily_metrics, output_path="hormuz_snapsh
     image = m.render(zoom=9, center=[56.45, 26.35])
     image.save(output_path)
 
-    # Draw Tactical HUD on the saved map
+    # Stamp Tactical HUD on the saved map
     fig, ax = plt.subplots(figsize=(13.66, 7.68), dpi=100)
     img_data = plt.imread(output_path)
     ax.imshow(img_data)
@@ -279,7 +289,7 @@ async def run_bot():
         save_history(history)
 
     except Exception as e:
-        logger.error(f"Bot failed: {e}")
+        logger.error(f"Bot failed: {e}", exc_info=True)
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)

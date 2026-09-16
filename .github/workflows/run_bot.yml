@@ -2,7 +2,8 @@ name: Strait of Hormuz OSINT Radar
 
 on:
   schedule:
-    - cron: '0 2,8,14,20 * * *'
+    # Runs every 6 hours at an off-peak minute (02:17, 08:17, 14:17, 20:17 UTC)
+    - cron: '17 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -31,7 +32,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' }}
         run: python bot.py
 
       - name: Commit history baseline

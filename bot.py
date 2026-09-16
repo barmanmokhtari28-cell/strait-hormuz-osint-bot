@@ -222,11 +222,11 @@ async def run_bot():
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     image_path = "hormuz_snapshot.png"
     history = load_history()
-    current_hour = datetime.now(timezone.utc).hour
 
     try:
         metrics = fetch_hormuz_data()
         
+        # Accumulate 24h daily counters
         history["daily_inbound"] = history.get("daily_inbound", 0) + metrics["inbound"]
         history["daily_outbound"] = history.get("daily_outbound", 0) + metrics["outbound"]
         
@@ -238,30 +238,26 @@ async def run_bot():
 
         generate_tactical_map(metrics, daily_metrics, image_path)
 
-        last_scheduled = history.get("last_scheduled_hour")
-        is_scheduled = (current_hour in SCHEDULED_HOURS_UTC) and (last_scheduled != current_hour)
+        # Always publish whenever the action is triggered
+        logger.info("Publishing tactical map to Telegram...")
+        caption = generate_caption(metrics, daily_metrics)
+        with open(image_path, "rb") as photo:
+            await bot.send_photo(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                photo=photo,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
 
-        if IS_MANUAL_RUN or is_scheduled or last_scheduled is None:
-            logger.info("Publishing tactical map to Telegram...")
-            caption = generate_caption(metrics, daily_metrics)
-            with open(image_path, "rb") as photo:
-                await bot.send_photo(
-                    chat_id=TELEGRAM_CHANNEL_ID,
-                    photo=photo,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML
-                )
-            history["last_scheduled_hour"] = current_hour
-
+        history["last_run"] = datetime.now(timezone.utc).isoformat()
         save_history(history)
-        logger.info("Job successfully completed.")
+        logger.info("Job successfully published to Telegram.")
 
     except Exception as e:
         logger.error(f"Execution failed: {e}", exc_info=True)
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
-
 if __name__ == "__main__":
     import asyncio
     asyncio.run(run_bot())

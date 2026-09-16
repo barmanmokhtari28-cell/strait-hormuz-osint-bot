@@ -1,11 +1,11 @@
 {
-  "date": "2026-09-15",
+  "date": "2026-09-16",
   "inbound": 0,
   "outbound": 0,
   "total": 1,
-  "last_scheduled_hour": 8,
+  "last_scheduled_hour": 5,
   "daily_inbound_mmsi": [],
   "daily_outbound_mmsi": [],
-  "daily_inbound": 14,
-  "daily_outbound": 14
+  "daily_inbound": 4,
+  "daily_outbound": 4
 }

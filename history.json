@@ -6,7 +6,7 @@
   "last_scheduled_hour": 5,
   "daily_inbound_mmsi": [],
   "daily_outbound_mmsi": [],
-  "daily_inbound": 4,
-  "daily_outbound": 4,
-  "last_run": "2026-10-13T14:07:04.388249+00:00"
+  "daily_inbound": 6,
+  "daily_outbound": 6,
+  "last_run": "2026-10-13T22:41:27.908755+00:00"
 }

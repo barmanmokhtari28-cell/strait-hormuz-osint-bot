@@ -1,12 +1,12 @@
 {
-  "date": "2026-10-13",
+  "date": "2026-10-14",
   "inbound": 0,
   "outbound": 0,
   "total": 1,
   "last_scheduled_hour": 5,
   "daily_inbound_mmsi": [],
   "daily_outbound_mmsi": [],
-  "daily_inbound": 6,
-  "daily_outbound": 6,
-  "last_run": "2026-10-13T22:41:27.908755+00:00"
+  "daily_inbound": 2,
+  "daily_outbound": 2,
+  "last_run": "2026-10-14T04:48:56.662946+00:00"
 }
